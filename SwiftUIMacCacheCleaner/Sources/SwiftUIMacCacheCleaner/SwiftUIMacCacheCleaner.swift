@@ -2,6 +2,13 @@ import SwiftUI
 import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // SPM bare executables are not a .app bundle; without this the window often stays
+        // behind other apps or never becomes key, so it looks like `swift run` did nothing.
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
     }
