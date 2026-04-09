@@ -2,7 +2,13 @@ import Foundation
 
 @MainActor
 final class CacheCleanerViewModel: ObservableObject {
-    @Published var targets: [CacheTarget] = CacheTarget.all
+    enum DiscoveryMode: String {
+        case strict = "Strict"
+        case balanced = "Balanced"
+    }
+
+    @Published var discoveryMode: DiscoveryMode = .strict
+    @Published var targets: [CacheTarget] = []
     @Published var selections: [String: Bool] = [:]
     @Published var targetSizes: [String: Int64] = [:]
     @Published var statusText: String = "Ready"
@@ -11,10 +17,18 @@ final class CacheCleanerViewModel: ObservableObject {
     @Published var totalCacheBytes: Int64 = 0
 
     init() {
-        for target in targets {
-            selections[target.id] = target.enabledByDefault
-            targetSizes[target.id] = 0
+        refreshTargets()
+        if targets.isEmpty {
+            diskStats = Self.getDiskStats()
+        } else {
+            Task { await scanSizes() }
         }
+    }
+
+    func updateDiscoveryMode(_ mode: DiscoveryMode) {
+        guard discoveryMode != mode else { return }
+        discoveryMode = mode
+        refreshTargets()
         Task { await scanSizes() }
     }
 
@@ -37,6 +51,12 @@ final class CacheCleanerViewModel: ObservableObject {
     }
 
     func scanSizes() async {
+        guard !targets.isEmpty else {
+            totalCacheBytes = 0
+            diskStats = Self.getDiskStats()
+            statusText = "No known cache folders were found on this Mac."
+            return
+        }
         isBusy = true
         statusText = "Scanning cache sizes..."
         let targetsSnapshot = targets
@@ -100,6 +120,113 @@ final class CacheCleanerViewModel: ObservableObject {
         let totalBytes = total.int64Value
         let freeBytes = free.int64Value
         return DiskStats(total: totalBytes, used: totalBytes - freeBytes, free: freeBytes)
+    }
+
+    private func refreshTargets() {
+        let discovered = Self.availableTargets(mode: discoveryMode)
+        let oldSelections = selections
+        targets = discovered
+        selections = [:]
+        targetSizes = [:]
+        for target in discovered {
+            selections[target.id] = oldSelections[target.id] ?? target.enabledByDefault
+            targetSizes[target.id] = 0
+        }
+        if discovered.isEmpty {
+            statusText = "No safe cache folders found for \(discoveryMode.rawValue.lowercased()) mode."
+            totalCacheBytes = 0
+        }
+    }
+
+    nonisolated private static func availableTargets(mode: DiscoveryMode) -> [CacheTarget] {
+        let homeURL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+        let candidateRoots = [
+            homeURL,
+            homeURL.appendingPathComponent("Library", isDirectory: true)
+        ].filter { FileManager.default.fileExists(atPath: $0.path) }
+
+        var discovered: [CacheTarget] = []
+        var seenPaths = Set<String>()
+        for root in candidateRoots {
+            traverseDirectories(root: root, home: homeURL, depth: 0, maxDepth: 5, mode: mode) { dir, reason in
+                let standardized = dir.standardizedFileURL.path
+                guard !seenPaths.contains(standardized) else { return }
+                seenPaths.insert(standardized)
+
+                let rel = standardized.replacingOccurrences(of: homeURL.path, with: "")
+                let cleanRel = rel.hasPrefix("/") ? String(rel.dropFirst()) : rel
+                let label = cleanRel.isEmpty ? "~" : "~/\(cleanRel)"
+                let id = "auto_" + cleanRel.replacingOccurrences(of: "/", with: "_")
+                discovered.append(CacheTarget(
+                    id: id,
+                    label: label,
+                    pathPattern: standardized,
+                    inclusionReason: reason,
+                    enabledByDefault: true
+                ))
+            }
+        }
+        return discovered.sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
+    }
+
+    nonisolated private static func traverseDirectories(
+        root: URL,
+        home: URL,
+        depth: Int,
+        maxDepth: Int,
+        mode: DiscoveryMode,
+        onCandidate: (URL, String) -> Void
+    ) {
+        guard depth <= maxDepth else { return }
+        guard let entries = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey]) else {
+            return
+        }
+
+        for entry in entries {
+            guard isDirectory(entry) else { continue }
+            if isProtectedTopLevel(entry, home: home) { continue }
+
+            if let reason = cacheReasonIfSafe(entry, home: home, mode: mode) {
+                onCandidate(entry, reason)
+            }
+            traverseDirectories(root: entry, home: home, depth: depth + 1, maxDepth: maxDepth, mode: mode, onCandidate: onCandidate)
+        }
+    }
+
+    nonisolated private static func isDirectory(_ url: URL) -> Bool {
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
+    }
+
+    nonisolated private static func isProtectedTopLevel(_ url: URL, home: URL) -> Bool {
+        let parent = url.deletingLastPathComponent().standardizedFileURL.path
+        guard parent == home.standardizedFileURL.path else { return false }
+        let protected = Set([
+            "Applications", "Desktop", "Documents", "Downloads", "Movies",
+            "Music", "Pictures", "Public", "Sites"
+        ])
+        return protected.contains(url.lastPathComponent)
+    }
+
+    nonisolated private static func cacheReasonIfSafe(_ url: URL, home: URL, mode: DiscoveryMode) -> String? {
+        let standardized = url.standardizedFileURL.path
+        let homePath = home.standardizedFileURL.path
+        guard standardized.hasPrefix(homePath), standardized != homePath else { return nil }
+
+        let lowerName = url.lastPathComponent.lowercased()
+        let strictKeywords = ["cache", "caches", "deriveddata"]
+        let balancedKeywords = strictKeywords + ["logs", "tmp", "temp"]
+        let keywords = mode == .strict ? strictKeywords : balancedKeywords
+        guard let matched = keywords.first(where: { lowerName.contains($0) }) else { return nil }
+
+        guard let children = try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil),
+              !children.isEmpty else {
+            return nil
+        }
+        if mode == .strict {
+            return "Matched strict cache keyword: '\(matched)'"
+        }
+        return "Matched balanced cache keyword: '\(matched)'"
     }
 
     nonisolated private static func resolvePaths(pattern: String) -> [URL] {

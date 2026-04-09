@@ -2,7 +2,6 @@
 import os
 import shutil
 import threading
-import glob
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,22 +14,30 @@ class CacheTarget:
     key: str
     label: str
     path: Path
+    inclusion_reason: str
     enabled_by_default: bool = True
 
 
 HOME = Path.home()
-CACHE_TARGETS = [
-    CacheTarget("user_cache", "User cache (~Library/Caches)", HOME / "Library/Caches"),
-    CacheTarget("logs", "User logs (~Library/Logs)", HOME / "Library/Logs", False),
-    CacheTarget("xcode_derived", "Xcode DerivedData", HOME / "Library/Developer/Xcode/DerivedData"),
-    CacheTarget("xcode_archives", "Xcode Archives", HOME / "Library/Developer/Xcode/Archives", False),
-    CacheTarget("xcode_device_support", "Xcode iOS DeviceSupport", HOME / "Library/Developer/Xcode/iOS DeviceSupport", False),
-    CacheTarget("android_studio", "Android Studio caches", HOME / "Library/Caches/Google/AndroidStudio*"),
-    CacheTarget("gradle", "Gradle caches (~/.gradle/caches)", HOME / ".gradle/caches"),
-    CacheTarget("npm", "npm cache (~/.npm)", HOME / ".npm", False),
-    CacheTarget("yarn", "Yarn cache (~/.yarn)", HOME / ".yarn", False),
-    CacheTarget("cocoapods", "CocoaPods cache (~/.cocoapods)", HOME / ".cocoapods", False),
-]
+CACHE_NAME_KEYWORDS = ("cache", "caches", "logs", "tmp", "temp", "deriveddata")
+PROTECTED_TOP_LEVEL = {
+    "Applications",
+    "Desktop",
+    "Documents",
+    "Downloads",
+    "Movies",
+    "Music",
+    "Pictures",
+    "Public",
+    "Sites",
+}
+SKIP_DIRECTORY_NAMES = {
+    ".git",
+    ".svn",
+    "__pycache__",
+    "node_modules",
+}
+MAX_DISCOVERY_DEPTH = 5
 
 
 def resource_path(relative_path: str) -> Path:
@@ -66,10 +73,86 @@ def size_of_path(path: Path) -> int:
 
 
 def resolve_paths(target_path: Path) -> list[Path]:
-    as_text = str(target_path)
-    if "*" in as_text:
-        return [Path(p) for p in sorted(glob.glob(as_text))]
     return [target_path]
+
+
+def is_protected_top_level(path: Path) -> bool:
+    return path.parent == HOME and path.name in PROTECTED_TOP_LEVEL
+
+
+def is_safe_cache_candidate(path: Path) -> bool:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    if not resolved.is_dir():
+        return False
+    if resolved == HOME:
+        return False
+    if HOME not in resolved.parents:
+        return False
+
+    lower_name = resolved.name.lower()
+    if not any(keyword in lower_name for keyword in CACHE_NAME_KEYWORDS):
+        return False
+
+    try:
+        next(resolved.iterdir())
+    except (StopIteration, PermissionError, OSError):
+        return False
+    return True
+
+
+def discover_cache_targets(strict_mode: bool) -> list[CacheTarget]:
+    roots = [HOME, HOME / "Library"]
+    seen: set[Path] = set()
+    discovered: list[CacheTarget] = []
+    strict_keywords = ("cache", "caches", "deriveddata")
+    balanced_keywords = strict_keywords + ("logs", "tmp", "temp")
+    keywords = strict_keywords if strict_mode else balanced_keywords
+
+    for root in roots:
+        if not root.exists() or not root.is_dir():
+            continue
+        root_parts = len(root.parts)
+        for dirpath, dirnames, _ in os.walk(root, topdown=True, followlinks=False):
+            current = Path(dirpath)
+            depth = len(current.parts) - root_parts
+            dirnames[:] = [
+                name for name in dirnames
+                if name not in SKIP_DIRECTORY_NAMES and depth < MAX_DISCOVERY_DEPTH
+            ]
+            if current == root:
+                dirnames[:] = [name for name in dirnames if name not in PROTECTED_TOP_LEVEL]
+
+            if is_protected_top_level(current):
+                continue
+            if not is_safe_cache_candidate(current):
+                continue
+            lower_name = current.name.lower()
+            matched = next((keyword for keyword in keywords if keyword in lower_name), None)
+            if not matched:
+                continue
+            if current in seen:
+                continue
+            seen.add(current)
+
+            rel = current.relative_to(HOME)
+            label = f"~/{rel}"
+            key = f"auto_{str(rel).replace('/', '_')}"
+            mode_name = "strict" if strict_mode else "balanced"
+            reason = f"Matched {mode_name} cache keyword: '{matched}'"
+            discovered.append(
+                CacheTarget(
+                    key=key,
+                    label=label,
+                    path=current,
+                    inclusion_reason=reason,
+                    enabled_by_default=True,
+                )
+            )
+
+    return sorted(discovered, key=lambda target: target.label.lower())
 
 
 def clear_folder_contents(folder: Path) -> tuple[int, int]:
@@ -116,7 +199,10 @@ class CacheCleanerApp(tk.Tk):
         self.size_labels: dict[str, tk.Label] = {}
         self.path_labels: dict[str, tk.Label] = {}
         self.storage_labels: dict[str, tk.Label] = {}
+        self.rows_container: tk.Frame | None = None
         self.total_cache_bytes = 0
+        self.strict_mode_var = tk.BooleanVar(value=True)
+        self.available_targets = self._discover_available_targets()
 
         self._set_app_icon()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -126,7 +212,90 @@ class CacheCleanerApp(tk.Tk):
             pass
 
         self._build_ui()
-        self.scan_sizes()
+        if self.available_targets:
+            self.scan_sizes()
+        else:
+            self.status.config(text="No known cache folders were found on this Mac.")
+            disk = shutil.disk_usage(HOME)
+            self.storage_labels["total"].config(text=format_size(disk.total))
+            self.storage_labels["used"].config(text=format_size(disk.used))
+            self.storage_labels["free"].config(text=format_size(disk.free))
+            self.storage_labels["cache"].config(text=format_size(0))
+
+    def _discover_available_targets(self) -> list[CacheTarget]:
+        return discover_cache_targets(strict_mode=self.strict_mode_var.get())
+
+    def _on_mode_toggled(self) -> None:
+        self.available_targets = self._discover_available_targets()
+        self.vars.clear()
+        self.size_labels.clear()
+        self.path_labels.clear()
+        self._render_target_rows()
+        if self.available_targets:
+            self.status.config(text="Mode updated. Scanning cache sizes...")
+            self.scan_sizes()
+        else:
+            self.status.config(text="No safe cache folders found for selected mode.")
+            self.storage_labels["cache"].config(text=format_size(0))
+
+    def _render_target_rows(self) -> None:
+        if self.rows_container is None:
+            return
+        for widget in self.rows_container.winfo_children():
+            widget.destroy()
+
+        for target in self.available_targets:
+            row = tk.Frame(self.rows_container, bg=self.BG_CARD, padx=12, pady=10, highlightbackground=self.CARD_HL, highlightthickness=1)
+            row.pack(fill=tk.X, pady=(0, 8))
+
+            var = tk.BooleanVar(value=target.enabled_by_default)
+            self.vars[target.key] = var
+            tk.Checkbutton(
+                row,
+                variable=var,
+                text=target.label,
+                bg=self.BG_CARD,
+                fg=self.FG_MAIN,
+                selectcolor="#3c4a5d",
+                activebackground=self.BG_CARD,
+                activeforeground=self.FG_MAIN,
+                font=("SF Pro Text", 12, "bold"),
+            ).pack(side=tk.LEFT, anchor=tk.W)
+
+            size_label = tk.Label(
+                row,
+                text="Not scanned",
+                bg="#3a4758",
+                fg="#f8fafc",
+                padx=10,
+                pady=4,
+                font=("SF Pro Text", 11, "bold"),
+            )
+            size_label.pack(side=tk.RIGHT)
+            self.size_labels[target.key] = size_label
+
+            path_label = tk.Label(
+                row,
+                text=str(target.path),
+                bg=self.BG_CARD,
+                fg=self.FG_MUTED,
+                anchor="w",
+                justify=tk.LEFT,
+                font=("SF Mono", 10),
+            )
+            path_label.pack(fill=tk.X, padx=(22, 0), pady=(2, 0))
+            self.path_labels[target.key] = path_label
+
+            reason_label = tk.Label(
+                row,
+                text=target.inclusion_reason,
+                bg=self.BG_CARD,
+                fg=self.FG_MUTED,
+                anchor="w",
+                justify=tk.LEFT,
+                font=("SF Pro Text", 9),
+            )
+            reason_label.pack(fill=tk.X, padx=(22, 0), pady=(1, 0))
 
     def _set_app_icon(self) -> None:
         icon_path = resource_path("assets/app_icon.png")
@@ -180,7 +349,7 @@ class CacheCleanerApp(tk.Tk):
 
         subtitle = tk.Label(
             header,
-            text="Clean system and developer caches, including Xcode and Android Studio targets.",
+            text="Automatically discovers safe cache folders on this Mac.",
             bg=self.BG_PANEL,
             fg=self.FG_MUTED,
             font=("SF Pro Text", 12),
@@ -210,6 +379,18 @@ class CacheCleanerApp(tk.Tk):
         self._make_button(controls, "Scan Sizes", self.scan_sizes, bg=self.ACCENT).pack(side=tk.LEFT)
         self._make_button(controls, "Select All", self.select_all).pack(side=tk.LEFT, padx=(8, 0))
         self._make_button(controls, "Select Recommended", self.select_recommended).pack(side=tk.LEFT, padx=(8, 0))
+        tk.Checkbutton(
+            controls,
+            text="Strict mode",
+            variable=self.strict_mode_var,
+            command=self._on_mode_toggled,
+            bg=self.BG_MAIN,
+            fg=self.FG_MAIN,
+            selectcolor="#3c4a5d",
+            activebackground=self.BG_MAIN,
+            activeforeground=self.FG_MAIN,
+            font=("SF Pro Text", 11),
+        ).pack(side=tk.LEFT, padx=(12, 0))
         self._make_button(controls, "Clear Selected", self.clear_selected, bg=self.DANGER).pack(side=tk.RIGHT)
 
         list_container = tk.Frame(frame, bg=self.BG_PANEL, padx=8, pady=8)
@@ -218,6 +399,7 @@ class CacheCleanerApp(tk.Tk):
         canvas = tk.Canvas(list_container, highlightthickness=0, bg=self.BG_PANEL)
         scrollbar = tk.Scrollbar(list_container, orient=tk.VERTICAL, command=canvas.yview)
         scroll_frame = tk.Frame(canvas, bg=self.BG_PANEL)
+        self.rows_container = scroll_frame
 
         scroll_frame.bind(
             "<Configure>",
@@ -234,47 +416,7 @@ class CacheCleanerApp(tk.Tk):
 
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
-        for target in CACHE_TARGETS:
-            row = tk.Frame(scroll_frame, bg=self.BG_CARD, padx=12, pady=10, highlightbackground=self.CARD_HL, highlightthickness=1)
-            row.pack(fill=tk.X, pady=(0, 8))
-
-            var = tk.BooleanVar(value=target.enabled_by_default)
-            self.vars[target.key] = var
-            tk.Checkbutton(
-                row,
-                variable=var,
-                text=target.label,
-                bg=self.BG_CARD,
-                fg=self.FG_MAIN,
-                selectcolor="#3c4a5d",
-                activebackground=self.BG_CARD,
-                activeforeground=self.FG_MAIN,
-                font=("SF Pro Text", 12, "bold"),
-            ).pack(side=tk.LEFT, anchor=tk.W)
-
-            size_label = tk.Label(
-                row,
-                text="Not scanned",
-                bg="#3a4758",
-                fg="#f8fafc",
-                padx=10,
-                pady=4,
-                font=("SF Pro Text", 11, "bold"),
-            )
-            size_label.pack(side=tk.RIGHT)
-            self.size_labels[target.key] = size_label
-
-            path_label = tk.Label(
-                row,
-                text=str(target.path),
-                bg=self.BG_CARD,
-                fg=self.FG_MUTED,
-                anchor="w",
-                justify=tk.LEFT,
-                font=("SF Mono", 10),
-            )
-            path_label.pack(fill=tk.X, padx=(22, 0), pady=(2, 0))
-            self.path_labels[target.key] = path_label
+        self._render_target_rows()
 
         footer = tk.Frame(frame, bg=self.BG_MAIN)
         footer.pack(fill=tk.X, pady=(10, 0))
@@ -289,7 +431,7 @@ class CacheCleanerApp(tk.Tk):
 
         hint = tk.Label(
             footer,
-            text="Tip: Close IDEs before cleaning for best results.",
+            text="Tip: Close IDEs before cleaning for best results. Showing available targets only.",
             bg=self.BG_MAIN,
             fg=self.FG_MUTED,
             font=("SF Pro Text", 10),
@@ -302,11 +444,14 @@ class CacheCleanerApp(tk.Tk):
         self.status.config(text="All targets selected.")
 
     def select_recommended(self) -> None:
-        for target in CACHE_TARGETS:
+        for target in self.available_targets:
             self.vars[target.key].set(target.enabled_by_default)
         self.status.config(text="Recommended targets selected.")
 
     def scan_sizes(self) -> None:
+        if not self.available_targets:
+            self.status.config(text="No known cache folders were found on this Mac.")
+            return
         self.status.config(text="Scanning cache sizes...")
         for label in self.size_labels.values():
             label.config(text="Scanning...")
@@ -316,7 +461,7 @@ class CacheCleanerApp(tk.Tk):
     def _scan_sizes_worker(self) -> None:
         target_sizes: dict[str, int] = {}
         total_cache = 0
-        for target in CACHE_TARGETS:
+        for target in self.available_targets:
             resolved = resolve_paths(target.path)
             size = sum(size_of_path(path) for path in resolved)
             target_sizes[target.key] = size
@@ -326,7 +471,7 @@ class CacheCleanerApp(tk.Tk):
         self.after(0, lambda: self._update_sizes_ui(target_sizes, total_cache, disk))
 
     def _update_sizes_ui(self, target_sizes: dict[str, int], total_cache: int, disk: tuple[int, int, int]) -> None:
-        for target in CACHE_TARGETS:
+        for target in self.available_targets:
             self.size_labels[target.key].config(text=format_size(target_sizes[target.key]))
         self.total_cache_bytes = total_cache
         self.storage_labels["total"].config(text=format_size(disk.total))
@@ -336,7 +481,7 @@ class CacheCleanerApp(tk.Tk):
         self.status.config(text=f"Scan complete. Cache footprint: {format_size(total_cache)}")
 
     def clear_selected(self) -> None:
-        selected = [t for t in CACHE_TARGETS if self.vars[t.key].get()]
+        selected = [t for t in self.available_targets if self.vars[t.key].get()]
         if not selected:
             messagebox.showinfo("No selection", "Select at least one cache target.")
             return

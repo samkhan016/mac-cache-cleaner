@@ -7,6 +7,7 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 14) {
             header
+            discoveryModeRow
             statsRow
             actionRow
             cacheList
@@ -35,7 +36,7 @@ struct ContentView: View {
             Text("Mac Cache Cleaner")
                 .font(.system(size: 31, weight: .bold))
                 .foregroundStyle(.white)
-            Text("Native SwiftUI cleaner for macOS and developer caches.")
+            Text("Automatically discovers safe cache folders on this Mac.")
                 .font(.system(size: 14))
                 .foregroundStyle(.white.opacity(0.7))
         }
@@ -93,6 +94,22 @@ struct ContentView: View {
         }
     }
 
+    private var discoveryModeRow: some View {
+        HStack(spacing: 10) {
+            Text("Discovery Mode")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.8))
+            Picker("Discovery Mode", selection: Binding(
+                get: { viewModel.discoveryMode },
+                set: { viewModel.updateDiscoveryMode($0) }
+            )) {
+                Text("Strict").tag(CacheCleanerViewModel.DiscoveryMode.strict)
+                Text("Balanced").tag(CacheCleanerViewModel.DiscoveryMode.balanced)
+            }
+            .pickerStyle(.segmented)
+        }
+    }
+
     private var cacheList: some View {
         List {
             ForEach(viewModel.targets) { target in
@@ -110,6 +127,9 @@ struct ContentView: View {
                             Text(target.pathPattern)
                                 .font(.system(size: 11, weight: .regular, design: .monospaced))
                                 .foregroundStyle(.white.opacity(0.55))
+                            Text(target.inclusionReason)
+                                .font(.system(size: 10, weight: .regular))
+                                .foregroundStyle(.white.opacity(0.45))
                         }
                     }
                     .toggleStyle(.checkbox)
@@ -141,6 +161,9 @@ struct ContentView: View {
                 .foregroundStyle(.white.opacity(0.8))
             Spacer()
             Text("Tip: Close Xcode/Android Studio before cleaning")
+                .font(.system(size: 11))
+                .foregroundStyle(.white.opacity(0.55))
+            Text("Showing available targets only")
                 .font(.system(size: 11))
                 .foregroundStyle(.white.opacity(0.55))
         }
