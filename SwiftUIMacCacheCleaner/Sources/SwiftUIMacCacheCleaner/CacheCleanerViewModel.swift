@@ -2,10 +2,11 @@ import Foundation
 
 @MainActor
 final class CacheCleanerViewModel: ObservableObject {
-    /// Sidebar rows: Home plus each discovery mode.
+    /// Sidebar rows: Home, discovery modes, and About.
     enum SidebarDestination: Hashable {
         case home
         case discovery(DiscoveryMode)
+        case about
     }
 
     enum DiscoveryMode: String, CaseIterable, Identifiable {
@@ -35,10 +36,19 @@ final class CacheCleanerViewModel: ObservableObject {
         }
     }
 
+    enum TargetSortOption: String, CaseIterable, Identifiable {
+        case name = "Name"
+        case sizeDescending = "Size (Largest First)"
+        case sizeAscending = "Size (Smallest First)"
+
+        var id: String { rawValue }
+    }
+
     private struct ModeWorkspace: Equatable {
         var targets: [CacheTarget]
         var selections: [String: Bool]
         var targetSizes: [String: Int64]
+        var targetSortOption: TargetSortOption
         var totalCacheBytes: Int64
         var hasCompletedScan: Bool
         /// After a successful cleanup (until the user runs a visible scan again).
@@ -52,6 +62,8 @@ final class CacheCleanerViewModel: ObservableObject {
     @Published var targets: [CacheTarget] = []
     @Published var selections: [String: Bool] = [:]
     @Published var targetSizes: [String: Int64] = [:]
+    @Published var targetItemCounts: [String: Int] = [:]
+    @Published var targetSortOption: TargetSortOption = .name
     @Published var statusText: String = "Ready"
     @Published var lastOperationReport: String = "No cleanup run yet."
     @Published var isBusy: Bool = false
@@ -68,7 +80,7 @@ final class CacheCleanerViewModel: ObservableObject {
 
     private enum OperationOutcome {
         case cancelled
-        case scan(sizes: [String: Int64], total: Int64, diskStats: DiskStats)
+        case scan(sizes: [String: Int64], itemCounts: [String: Int], total: Int64, diskStats: DiskStats)
         case cleanup(itemsDeleted: Int, itemsFailed: Int, inaccessibleFolders: Int, unsafeFolders: Int, freedBytes: Int64)
         case dryRun(itemsEstimated: Int, inaccessibleFolders: Int, unsafeFolders: Int, estimatedFreed: Int64)
     }
@@ -117,6 +129,7 @@ final class CacheCleanerViewModel: ObservableObject {
             targets: targets,
             selections: selections,
             targetSizes: targetSizes,
+            targetSortOption: targetSortOption,
             totalCacheBytes: totalCacheBytes,
             hasCompletedScan: hasCompletedScan,
             hasCleanedSinceLastScan: hasCleanedSinceLastScan,
@@ -130,12 +143,15 @@ final class CacheCleanerViewModel: ObservableObject {
         targets = workspace.targets
         selections = workspace.selections
         targetSizes = workspace.targetSizes
+        targetItemCounts = [:]
+        targetSortOption = workspace.targetSortOption
         totalCacheBytes = workspace.totalCacheBytes
         hasCompletedScan = workspace.hasCompletedScan
         hasCleanedSinceLastScan = workspace.hasCleanedSinceLastScan
         lastOperationReport = workspace.lastOperationReport
         statusText = workspace.statusText
         lastCleanupSummary = workspace.lastCleanupSummary
+        sortTargetsInPlace()
     }
 
     var discoveryModeDescription: String {
@@ -165,16 +181,32 @@ final class CacheCleanerViewModel: ObservableObject {
         statusText = "Recommended targets selected."
     }
 
+    func deselectAll() {
+        for target in targets {
+            selections[target.id] = false
+        }
+        statusText = "All targets deselected."
+    }
+
     func selectedTargets() -> [CacheTarget] {
         targets.filter { selections[$0.id] == true }
     }
 
-    func selectedSummary() -> (count: Int, bytes: Int64) {
+    func selectedSummary() -> (count: Int, bytes: Int64, items: Int) {
         let selected = selectedTargets()
         let bytes = selected.reduce(Int64(0)) { partial, target in
             partial + (targetSizes[target.id] ?? 0)
         }
-        return (selected.count, bytes)
+        let items = selected.reduce(0) { partial, target in
+            partial + (targetItemCounts[target.id] ?? 0)
+        }
+        return (selected.count, bytes, items)
+    }
+
+    func setTargetSortOption(_ option: TargetSortOption) {
+        guard targetSortOption != option else { return }
+        targetSortOption = option
+        sortTargetsInPlace()
     }
 
     func cancelCurrentOperation() {
@@ -221,20 +253,24 @@ final class CacheCleanerViewModel: ObservableObject {
 
         let operation = Task.detached(priority: .userInitiated) { () -> OperationOutcome in
             var localSizes: [String: Int64] = [:]
+            var localItemCounts: [String: Int] = [:]
             var localTotal: Int64 = 0
             for target in targetsSnapshot {
                 if Task.isCancelled { return .cancelled }
                 let resolved = Self.resolvePaths(pattern: target.pathPattern)
                 var size: Int64 = 0
+                var itemCount = 0
                 for path in resolved {
                     if Task.isCancelled { return .cancelled }
                     size += Self.sizeOfPath(path)
+                    itemCount += Self.previewFolderContents(path).itemsEstimated
                 }
                 localSizes[target.id] = size
+                localItemCounts[target.id] = itemCount
                 localTotal += size
             }
             if Task.isCancelled { return .cancelled }
-            return .scan(sizes: localSizes, total: localTotal, diskStats: Self.getDiskStats())
+            return .scan(sizes: localSizes, itemCounts: localItemCounts, total: localTotal, diskStats: Self.getDiskStats())
         }
         activeOperation = operation
         let outcome = await operation.value
@@ -251,10 +287,12 @@ final class CacheCleanerViewModel: ObservableObject {
                 statusText = "Scan cancelled."
                 lastOperationReport = "Scan was cancelled before completion."
             }
-        case let .scan(sizes, total, stats):
+        case let .scan(sizes, itemCounts, total, stats):
             targetSizes = sizes
+            targetItemCounts = itemCounts
             totalCacheBytes = total
             diskStats = stats
+            sortTargetsInPlace()
             isSilentlyScanning = false
             hasCompletedScan = true
             if showProgressUI {
@@ -312,7 +350,7 @@ final class CacheCleanerViewModel: ObservableObject {
 
             for (index, path) in workItems.enumerated() {
                 if Task.isCancelled { return .cancelled }
-                guard Self.isPathSafeForCleanup(path) else {
+                guard Self.isPathSafeForCleanup(path, mode: modeForOperation) else {
                     unsafeFolders += 1
                     totalItemsFailed += 1
                     continue
@@ -406,7 +444,7 @@ final class CacheCleanerViewModel: ObservableObject {
                 let resolved = Self.resolvePaths(pattern: target.pathPattern)
                 for path in resolved {
                     if Task.isCancelled { return .cancelled }
-                    guard Self.isPathSafeForCleanup(path) else {
+                    guard Self.isPathSafeForCleanup(path, mode: modeForOperation) else {
                         unsafeFolders += 1
                         continue
                     }
@@ -466,19 +504,27 @@ final class CacheCleanerViewModel: ObservableObject {
         targets = discovered
         selections = [:]
         targetSizes = [:]
+        targetItemCounts = [:]
         totalCacheBytes = 0
         for target in discovered {
             selections[target.id] = oldSelections[target.id] ?? target.enabledByDefault
             targetSizes[target.id] = 0
+            targetItemCounts[target.id] = 0
         }
         if discovered.isEmpty {
             statusText = "No safe cache folders found for \(discoveryMode.rawValue.lowercased()) mode."
             totalCacheBytes = 0
         }
+        sortTargetsInPlace()
     }
 
-    nonisolated private static func availableTargets(mode: DiscoveryMode) -> [CacheTarget] {
+    nonisolated static func availableTargets(mode: DiscoveryMode) -> [CacheTarget] {
         let homeURL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).standardizedFileURL
+        return availableTargets(mode: mode, homeURL: homeURL)
+    }
+
+    nonisolated static func availableTargets(mode: DiscoveryMode, homeURL: URL) -> [CacheTarget] {
+        let standardizedHome = homeURL.standardizedFileURL
         let definitions = safeTargetDefinitions(mode: mode)
         var discovered: [CacheTarget] = []
         var seenPaths = Set<String>()
@@ -488,11 +534,11 @@ final class CacheCleanerViewModel: ObservableObject {
             for resolved in resolvedPaths {
                 let standardized = resolved.standardizedFileURL.path
                 guard !seenPaths.contains(standardized) else { continue }
-                guard isPathSafeForCleanup(resolved) else { continue }
+                guard isPathSafeForCleanup(resolved, mode: mode, homeURL: standardizedHome) else { continue }
                 guard FileManager.default.fileExists(atPath: standardized) else { continue }
                 seenPaths.insert(standardized)
 
-                let rel = standardized.replacingOccurrences(of: homeURL.path, with: "")
+                let rel = standardized.replacingOccurrences(of: standardizedHome.path, with: "")
                 let cleanRel = rel.hasPrefix("/") ? String(rel.dropFirst()) : rel
                 let label = cleanRel.isEmpty ? "~" : "~/\(cleanRel)"
                 let id = "safe_" + cleanRel.replacingOccurrences(of: "/", with: "_")
@@ -506,6 +552,26 @@ final class CacheCleanerViewModel: ObservableObject {
             }
         }
 
+        for dynamic in dynamicTargetDefinitions(mode: mode, homeURL: standardizedHome) {
+            let standardized = dynamic.path.standardizedFileURL.path
+            guard !seenPaths.contains(standardized) else { continue }
+            guard isPathSafeForCleanup(dynamic.path, mode: mode, homeURL: standardizedHome) else { continue }
+            guard FileManager.default.fileExists(atPath: standardized) else { continue }
+            seenPaths.insert(standardized)
+
+            let rel = standardized.replacingOccurrences(of: standardizedHome.path, with: "")
+            let cleanRel = rel.hasPrefix("/") ? String(rel.dropFirst()) : rel
+            let label = cleanRel.isEmpty ? "~" : "~/\(cleanRel)"
+            let id = "safe_" + cleanRel.replacingOccurrences(of: "/", with: "_")
+            discovered.append(CacheTarget(
+                id: id,
+                label: label,
+                pathPattern: standardized,
+                inclusionReason: dynamic.reason,
+                enabledByDefault: dynamic.enabledByDefault
+            ))
+        }
+
         return discovered.sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
     }
 
@@ -515,17 +581,12 @@ final class CacheCleanerViewModel: ObservableObject {
         ]
         let strict: [(String, String, Bool)] = [
             ("~/Library/Caches", "Known Apple/user cache root", true),
-            ("~/Library/Containers/*/Data/Library/Caches", "App sandbox cache root", true),
-            ("~/Library/Group Containers/*/Library/Caches", "Group container cache root", true),
             ("~/Library/Developer/Xcode/DerivedData", "Xcode build cache (DerivedData)", false),
             ("~/Library/Developer/CoreSimulator/Caches", "Simulator cache root", false)
         ]
         let balancedOnly: [(String, String, Bool)] = [
             ("~/Library/Logs", "User log files (safe to clear)", false),
-            ("~/Library/Containers/*/Data/Library/Logs", "Sandbox app logs", false),
-            ("~/Library/Group Containers/*/Library/Logs", "Group container logs", false),
-            ("~/Library/tmp", "User temporary files", false),
-            ("~/Library/Containers/*/Data/Library/tmp", "Sandbox temporary files", false)
+            ("~/Library/tmp", "User temporary files", false)
         ]
         let developerDeepCleanOnly: [(String, String, Bool)] = [
             ("~/.gradle/caches", "Android/Gradle dependency and build caches", false),
@@ -545,9 +606,7 @@ final class CacheCleanerViewModel: ObservableObject {
             ("~/.cache/pypoetry", "Poetry package cache", false),
             ("~/Library/Caches/pypoetry", "Poetry macOS cache location", false),
             ("~/.cache/uv", "uv package cache", false),
-            ("~/Library/Caches/JetBrains", "JetBrains IDE system caches", false),
-            ("~/Library/Application Support/JetBrains/*/caches", "JetBrains project/IDE caches", false),
-            ("~/Library/Application Support/Google/AndroidStudio*/caches", "Android Studio IDE caches", false)
+            ("~/Library/Caches/JetBrains", "JetBrains IDE system caches", false)
         ]
         switch mode {
         case .ultraSafe:
@@ -561,13 +620,19 @@ final class CacheCleanerViewModel: ObservableObject {
         }
     }
 
-    nonisolated private static func isPathSafeForCleanup(_ url: URL) -> Bool {
-        let standardized = url.standardizedFileURL.path
-        let expandedHome = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).standardizedFileURL.path
+    nonisolated static func isPathSafeForCleanup(
+        _ url: URL,
+        mode: DiscoveryMode,
+        homeURL: URL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).standardizedFileURL
+    ) -> Bool {
+        let standardized = url.standardizedFileURL.resolvingSymlinksInPath().path
+        let expandedHome = homeURL.standardizedFileURL.path
         guard standardized.hasPrefix(expandedHome + "/") else { return false }
 
-        let strictAllowedPrefixes = [
-            "\(expandedHome)/Library/Caches",
+        let ultraSafeAllowedPrefixes = [
+            "\(expandedHome)/Library/Caches"
+        ]
+        let strictAllowedPrefixes = ultraSafeAllowedPrefixes + [
             "\(expandedHome)/Library/Containers",
             "\(expandedHome)/Library/Group Containers",
             "\(expandedHome)/Library/Developer/Xcode/DerivedData",
@@ -599,7 +664,17 @@ final class CacheCleanerViewModel: ObservableObject {
             "\(expandedHome)/Library/Application Support/JetBrains",
             "\(expandedHome)/Library/Application Support/Google"
         ]
-        let allowedPrefixes = developerDeepAllowedPrefixes
+        let allowedPrefixes: [String]
+        switch mode {
+        case .ultraSafe:
+            allowedPrefixes = ultraSafeAllowedPrefixes
+        case .strict:
+            allowedPrefixes = strictAllowedPrefixes
+        case .balanced:
+            allowedPrefixes = balancedAllowedPrefixes
+        case .developerDeepClean:
+            allowedPrefixes = developerDeepAllowedPrefixes
+        }
         guard allowedPrefixes.contains(where: { standardized == $0 || standardized.hasPrefix($0 + "/") }) else {
             return false
         }
@@ -612,6 +687,116 @@ final class CacheCleanerViewModel: ObservableObject {
             "cocoapods", "yarn", "pnpm", "pip", "pypoetry", "uv"
         ]
         return safeKeywords.contains(where: { lowercase.contains($0) })
+    }
+
+    private struct DynamicTargetDefinition {
+        let path: URL
+        let reason: String
+        let enabledByDefault: Bool
+    }
+
+    nonisolated private static func dynamicTargetDefinitions(
+        mode: DiscoveryMode,
+        homeURL: URL
+    ) -> [DynamicTargetDefinition] {
+        var dynamic: [DynamicTargetDefinition] = []
+        dynamic += dynamicContainerTargets(homeURL: homeURL, relativePath: "Data/Library/Caches", reason: "App sandbox cache root", enabledByDefault: true)
+        dynamic += dynamicGroupContainerTargets(homeURL: homeURL, relativePath: "Library/Caches", reason: "Group container cache root", enabledByDefault: true)
+
+        if mode == .balanced || mode == .developerDeepClean {
+            dynamic += dynamicContainerTargets(homeURL: homeURL, relativePath: "Data/Library/Logs", reason: "Sandbox app logs", enabledByDefault: false)
+            dynamic += dynamicGroupContainerTargets(homeURL: homeURL, relativePath: "Library/Logs", reason: "Group container logs", enabledByDefault: false)
+            dynamic += dynamicContainerTargets(homeURL: homeURL, relativePath: "Data/Library/tmp", reason: "Sandbox temporary files", enabledByDefault: false)
+        }
+
+        if mode == .developerDeepClean {
+            dynamic += dynamicDeveloperAppSupportCaches(homeURL: homeURL)
+        }
+        return dynamic
+    }
+
+    nonisolated private static func dynamicContainerTargets(
+        homeURL: URL,
+        relativePath: String,
+        reason: String,
+        enabledByDefault: Bool
+    ) -> [DynamicTargetDefinition] {
+        let base = homeURL.appendingPathComponent("Library/Containers", isDirectory: true)
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: base,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        return entries.compactMap { container in
+            guard isDirectory(container) else { return nil }
+            let candidate = container.appendingPathComponent(relativePath, isDirectory: true).standardizedFileURL
+            return isDirectory(candidate) ? DynamicTargetDefinition(path: candidate, reason: reason, enabledByDefault: enabledByDefault) : nil
+        }
+    }
+
+    nonisolated private static func dynamicGroupContainerTargets(
+        homeURL: URL,
+        relativePath: String,
+        reason: String,
+        enabledByDefault: Bool
+    ) -> [DynamicTargetDefinition] {
+        let base = homeURL.appendingPathComponent("Library/Group Containers", isDirectory: true)
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: base,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        return entries.compactMap { container in
+            guard isDirectory(container) else { return nil }
+            let candidate = container.appendingPathComponent(relativePath, isDirectory: true).standardizedFileURL
+            return isDirectory(candidate) ? DynamicTargetDefinition(path: candidate, reason: reason, enabledByDefault: enabledByDefault) : nil
+        }
+    }
+
+    nonisolated private static func dynamicDeveloperAppSupportCaches(homeURL: URL) -> [DynamicTargetDefinition] {
+        var dynamic: [DynamicTargetDefinition] = []
+        let jetBrainsRoot = homeURL.appendingPathComponent("Library/Application Support/JetBrains", isDirectory: true)
+        if let products = try? FileManager.default.contentsOfDirectory(
+            at: jetBrainsRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            for product in products where isDirectory(product) {
+                let caches = product.appendingPathComponent("caches", isDirectory: true).standardizedFileURL
+                if isDirectory(caches) {
+                    dynamic.append(DynamicTargetDefinition(path: caches, reason: "JetBrains project/IDE caches", enabledByDefault: false))
+                }
+            }
+        }
+
+        let googleRoot = homeURL.appendingPathComponent("Library/Application Support/Google", isDirectory: true)
+        if let products = try? FileManager.default.contentsOfDirectory(
+            at: googleRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            for product in products where isDirectory(product) {
+                let name = product.lastPathComponent
+                guard wildcardMatches(pattern: "AndroidStudio*", text: name) else { continue }
+                let caches = product.appendingPathComponent("caches", isDirectory: true).standardizedFileURL
+                if isDirectory(caches) {
+                    dynamic.append(DynamicTargetDefinition(path: caches, reason: "Android Studio IDE caches", enabledByDefault: false))
+                }
+            }
+        }
+
+        return dynamic
+    }
+
+    nonisolated private static func isDirectory(_ url: URL) -> Bool {
+        var isDirectoryValue: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectoryValue) && isDirectoryValue.boolValue
     }
 
     nonisolated private static func resolvePaths(pattern: String) -> [URL] {
@@ -739,5 +924,33 @@ final class CacheCleanerViewModel: ObservableObject {
         let head = String(text.prefix(headCount))
         let tail = String(text.suffix(tailCount))
         return "\(head)...\(tail)"
+    }
+
+    private func sortTargetsInPlace() {
+        let sizes = targetSizes
+        switch targetSortOption {
+        case .name:
+            targets.sort { lhs, rhs in
+                lhs.label.localizedCaseInsensitiveCompare(rhs.label) == .orderedAscending
+            }
+        case .sizeDescending:
+            targets.sort { lhs, rhs in
+                let lhsSize = sizes[lhs.id] ?? 0
+                let rhsSize = sizes[rhs.id] ?? 0
+                if lhsSize == rhsSize {
+                    return lhs.label.localizedCaseInsensitiveCompare(rhs.label) == .orderedAscending
+                }
+                return lhsSize > rhsSize
+            }
+        case .sizeAscending:
+            targets.sort { lhs, rhs in
+                let lhsSize = sizes[lhs.id] ?? 0
+                let rhsSize = sizes[rhs.id] ?? 0
+                if lhsSize == rhsSize {
+                    return lhs.label.localizedCaseInsensitiveCompare(rhs.label) == .orderedAscending
+                }
+                return lhsSize < rhsSize
+            }
+        }
     }
 }

@@ -6,11 +6,12 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showConfirm = false
     @State private var activePrimaryAction: PrimaryAction?
-    @State private var statShimmerSweep: Bool = false
     /// Drives the custom sidebar; includes Home plus discovery modes.
     @State private var selectedSidebar: CacheCleanerViewModel.SidebarDestination = .home
     /// Keeps the sidebar open; paired with `hideSidebarToggleIfAvailable()`.
     @State private var splitViewColumnVisibility: NavigationSplitViewVisibility = .all
+    @AppStorage("safetyDisclaimerDoNotShowAgain") private var safetyDisclaimerDoNotShowAgain = false
+    @State private var showSafetyDisclaimerSheet = false
     private let statsColumns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 4)
 
     private var canClean: Bool {
@@ -43,13 +44,8 @@ struct ContentView: View {
                         destination: .discovery(mode)
                     )
                 }
+                sidebarRow(title: "About", symbol: "info.circle.fill", destination: .about)
                 Spacer(minLength: 0)
-                Text(appVersionText)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color.white.opacity(0.52))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 4)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(.horizontal, 8)
@@ -109,6 +105,8 @@ struct ContentView: View {
                         homeScrollContent
                     case .discovery:
                         modeScrollContent
+                    case .about:
+                        aboutScrollContent
                     }
                 }
             }
@@ -131,24 +129,25 @@ struct ContentView: View {
                 Task { await viewModel.clearSelected() }
             }
         } message: {
-            Text("Delete only contents from selected safe cache/log/temp/dev-build folders. App data and personal files are not targeted. This cannot be undone.")
+            Text(cleanupConfirmationMessage)
         }
         .onChange(of: viewModel.isBusy) { isBusy in
             if isBusy == false {
                 activePrimaryAction = nil
             }
         }
-        .onAppear {
-            if !reduceMotion {
-                withAnimation(.linear(duration: 1.45).repeatForever(autoreverses: false)) {
-                    statShimmerSweep = true
-                }
-            }
-        }
         .toolbarBackground(toolbarGradient, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
         .toolbarColorScheme(.dark, for: .windowToolbar)
         .preferredColorScheme(.dark)
+        .sheet(isPresented: $showSafetyDisclaimerSheet) {
+            safetyDisclaimerLaunchSheet
+        }
+        .onAppear {
+            if !safetyDisclaimerDoNotShowAgain {
+                showSafetyDisclaimerSheet = true
+            }
+        }
     }
 
     private func sidebarRow(
@@ -215,6 +214,33 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
         .sectionCard(cornerRadius: 20)
+    }
+
+    private var safetyDisclaimerLaunchSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Before you clean")
+                .font(.system(size: 20, weight: .bold, design: .rounded))
+            ScrollView {
+                Text(modeSafetyDisclaimer)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .multilineTextAlignment(.leading)
+            }
+            Toggle("Do not show this message again", isOn: $safetyDisclaimerDoNotShowAgain)
+                .toggleStyle(.checkbox)
+            HStack {
+                Spacer()
+                Button("Continue") {
+                    showSafetyDisclaimerSheet = false
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 480, minHeight: 320)
+        .frame(maxWidth: 560)
     }
 
     private var scanPromptCard: some View {
@@ -381,6 +407,10 @@ struct ContentView: View {
                     .accessibilityLabel("Status")
                     .accessibilityValue(viewModel.isBusy ? "Working" : "Ready")
             }
+            Text("If you are unsure, use Actions → Dry Run (⌘P) before clearing. Deselect any path you do not recognize.")
+                .font(.system(size: 11))
+                .foregroundStyle(tertiaryTextColor)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(14)
         .sectionCard(cornerRadius: 20)
@@ -412,9 +442,78 @@ struct ContentView: View {
         }
     }
 
-    private var modeScrollContent: some View {
+    private var aboutScrollContent: some View {
         ScrollView(showsIndicators: false) {
             VStack(spacing: 12) {
+                topHeader
+                    .padding(.top, 10)
+                aboutDetailsCard
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 14)
+        }
+    }
+
+    private var aboutDetailsCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                sectionTitle("About this app")
+                Spacer()
+                Text(appVersionText)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(tertiaryTextColor)
+            }
+            Text(aboutAppIntro)
+                .font(.system(size: 13))
+                .foregroundStyle(secondaryTextColor)
+                .fixedSize(horizontal: false, vertical: true)
+            Divider()
+                .overlay(Color.white.opacity(0.14))
+            sectionTitle("What you can do")
+            Text(aboutFeaturesList)
+                .font(.system(size: 13))
+                .foregroundStyle(secondaryTextColor)
+                .fixedSize(horizontal: false, vertical: true)
+            Divider()
+                .overlay(Color.white.opacity(0.14))
+            sectionTitle("Safety")
+            Text(aboutSafetyBlurb)
+                .font(.system(size: 12))
+                .foregroundStyle(tertiaryTextColor)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .sectionCard(cornerRadius: 20)
+    }
+
+    private var aboutAppIntro: String {
+        """
+        Mac Cache Cleaner is a native macOS app that helps you free disk space by finding and clearing cache, log, and temporary data under safe, allowlisted locations in your home folder.
+
+        It discovers folders dynamically as your system changes, shows how much space each target uses, and lets you scan, preview with Dry Run, and clear only what you select.
+        """
+    }
+
+    private var aboutFeaturesList: String {
+        """
+        • Home: see disk usage and start a quick scan in Ultra Safe mode.
+
+        • Ultra Safe, Strict, Balanced, and Developer Deep Clean: increasing scope—from user caches only up to optional developer tool caches.
+
+        • Each target explains why it is included. Cleanup removes files inside selected folders only, not the folders themselves.
+        """
+    }
+
+    private var aboutSafetyBlurb: String {
+        """
+        The app does not scan your entire disk or target Documents, Desktop, or arbitrary projects. No tool can guarantee that every file in a cache or toolchain folder is safe for you to lose—use Dry Run (⌘P) and deselect paths you do not recognize.
+        """
+    }
+
+    private var modeScrollContent: some View {
+        ScrollView(showsIndicators: false) {
+            LazyVStack(spacing: 12) {
                 topHeader
                     .padding(.top, 10)
                 modeIntroCard
@@ -441,10 +540,10 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 14) {
             sectionTitle("Storage")
             LazyVGrid(columns: statsColumns, spacing: 8) {
-                statChip(title: "Total", value: formatSize(viewModel.diskStats.total), symbol: "internaldrive.fill", color: Color(red: 0.06, green: 0.53, blue: 0.98), shimmering: viewModel.isSilentlyScanning)
-                statChip(title: "Used", value: formatSize(viewModel.diskStats.used), symbol: "chart.bar.fill", color: Color(red: 0.96, green: 0.57, blue: 0.20), shimmering: viewModel.isSilentlyScanning)
-                statChip(title: "Free", value: formatSize(viewModel.diskStats.free), symbol: "circle.grid.2x2.fill", color: Color(red: 0.18, green: 0.70, blue: 0.39), shimmering: viewModel.isSilentlyScanning)
-                statChip(title: "Cache", value: formatSize(viewModel.totalCacheBytes), symbol: "sparkles", color: Color(red: 0.45, green: 0.41, blue: 0.95), shimmering: viewModel.isSilentlyScanning)
+                StatChipView(title: "Total", value: formatSize(viewModel.diskStats.total), symbol: "internaldrive.fill", color: Color(red: 0.06, green: 0.53, blue: 0.98), shimmering: viewModel.isSilentlyScanning)
+                StatChipView(title: "Used", value: formatSize(viewModel.diskStats.used), symbol: "chart.bar.fill", color: Color(red: 0.96, green: 0.57, blue: 0.20), shimmering: viewModel.isSilentlyScanning)
+                StatChipView(title: "Free", value: formatSize(viewModel.diskStats.free), symbol: "circle.grid.2x2.fill", color: Color(red: 0.18, green: 0.70, blue: 0.39), shimmering: viewModel.isSilentlyScanning)
+                StatChipView(title: "Cache", value: formatSize(viewModel.totalCacheBytes), symbol: "sparkles", color: Color(red: 0.45, green: 0.41, blue: 0.95), shimmering: viewModel.isSilentlyScanning)
             }
             storageDiskChart
         }
@@ -675,10 +774,28 @@ struct ContentView: View {
         case .scan:
             return "Measures reclaimable cache size for this mode."
         case .clean:
-            return "Opens confirmation before deleting selected cache folders."
+            return "Opens confirmation before deleting files inside selected folders. No tool can guarantee you will never lose data you still care about; use Dry Run first if unsure."
         case .scanAgain:
             return "Starts a new scan after the last cleanup."
         }
+    }
+
+    private var modeSafetyDisclaimer: String {
+        """
+        Cleanup removes files inside the folders you select. This app targets allowlisted cache, log, temp, and (in developer modes) toolchain locations—not your Documents, Desktop, or arbitrary project folders.
+
+        No cleaner can promise that every file under a cache or tool folder is expendable for you. Developer modes may remove large downloads or build outputs you would need to fetch or rebuild. Use Actions → Dry Run (⌘P) first, read each path’s note, and deselect anything unfamiliar.
+        """
+    }
+
+    private var cleanupConfirmationMessage: String {
+        """
+        This will delete files inside the selected folders only (not the folders themselves).
+
+        Locations are restricted by the current mode, but no app can guarantee that a cache or toolchain folder never contains something you still need. Balanced and Developer modes can clear more aggressive targets.
+
+        Use Actions → Dry Run (⌘P) if you want a preview first. This cannot be undone.
+        """
     }
 
     private var primaryTextColor: Color {
@@ -712,63 +829,22 @@ struct ContentView: View {
         Color.white.opacity(0.14)
     }
 
-    private func statChip(title: String, value: String, symbol: String, color: Color, shimmering: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Image(systemName: symbol)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(color)
-                    .frame(width: 20, height: 20)
-                    .background(
-                        Circle()
-                            .fill(color.opacity(0.15))
-                    )
-                Text(title)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(primaryTextColor.opacity(0.9))
-            }
+    /// True when every target is selected (matches “Select All”).
+    private var selectionMatchesSelectAll: Bool {
+        guard !viewModel.targets.isEmpty else { return false }
+        return viewModel.targets.allSatisfy { viewModel.selections[$0.id] == true }
+    }
 
-            Text(value)
-                .font(.system(size: 15, weight: .bold, design: .rounded))
-                .foregroundStyle(primaryTextColor)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 10)
-        .frame(minHeight: 76, alignment: .leading)
-        .background(Color(red: 0.14, green: 0.12, blue: 0.28).opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(borderColor.opacity(0.9), lineWidth: 1)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
-        }
-        .overlay {
-            if shimmering && !reduceMotion {
-                GeometryReader { proxy in
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    .white.opacity(0),
-                                    .white.opacity(0.12),
-                                    .white.opacity(0)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                        .frame(width: max(proxy.size.width * 0.42, 24))
-                        .offset(x: statShimmerSweep ? proxy.size.width : -proxy.size.width)
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .allowsHitTesting(false)
-            }
-        }
+    /// True when each row matches its recommended default (matches “Recommended”).
+    private var selectionMatchesRecommended: Bool {
+        guard !viewModel.targets.isEmpty else { return false }
+        return viewModel.targets.allSatisfy { (viewModel.selections[$0.id] ?? false) == $0.enabledByDefault }
+    }
+
+    /// True when no target is currently selected (matches “Deselect All”).
+    private var selectionMatchesNone: Bool {
+        guard !viewModel.targets.isEmpty else { return false }
+        return viewModel.targets.allSatisfy { viewModel.selections[$0.id] != true }
     }
 
     private var targetsSection: some View {
@@ -776,19 +852,53 @@ struct ContentView: View {
             HStack {
                 sectionTitle("Cleanup Targets")
                 Spacer()
+                Picker("Sort", selection: Binding(
+                    get: { viewModel.targetSortOption },
+                    set: { viewModel.setTargetSortOption($0) }
+                )) {
+                    ForEach(CacheCleanerViewModel.TargetSortOption.allCases) { option in
+                        Text(option.rawValue).tag(option)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .disabled(viewModel.isBusy)
                 Text("\(viewModel.targets.count) folders")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(secondaryTextColor)
             }
 
             HStack(spacing: 7) {
-                actionButton("Select All", systemImage: "checklist", tint: Color(red: 0.10, green: 0.56, blue: 0.99), prominent: true) {
+                actionButton(
+                    "Select All",
+                    systemImage: "checklist",
+                    tint: Color(red: 0.10, green: 0.56, blue: 0.99),
+                    prominent: true,
+                    isActive: selectionMatchesSelectAll
+                ) {
                     viewModel.selectAll()
                 }
                 .disabled(viewModel.isBusy)
 
-                actionButton("Recommended", systemImage: "star.fill", tint: Color(red: 0.48, green: 0.46, blue: 0.95), prominent: true) {
+                actionButton(
+                    "Recommended",
+                    systemImage: "star.fill",
+                    tint: Color(red: 0.48, green: 0.46, blue: 0.95),
+                    prominent: true,
+                    isActive: selectionMatchesRecommended
+                ) {
                     viewModel.selectRecommended()
+                }
+                .disabled(viewModel.isBusy)
+
+                actionButton(
+                    "Deselect All",
+                    systemImage: "minus.circle.fill",
+                    tint: Color(red: 0.67, green: 0.38, blue: 0.88),
+                    prominent: true,
+                    isActive: selectionMatchesNone
+                ) {
+                    viewModel.deselectAll()
                 }
                 .disabled(viewModel.isBusy)
 
@@ -854,11 +964,11 @@ struct ContentView: View {
                     .accessibilityValue(viewModel.statusText)
                 Spacer()
                 let selected = viewModel.selectedSummary()
-                Text("Selected: \(selected.count) (\(formatSize(selected.bytes)))")
+                Text("Selected: \(selected.count) folders • \(selected.items) files • \(formatSize(selected.bytes))")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(secondaryTextColor)
-                    .accessibilityLabel("Selected folders")
-                    .accessibilityValue("\(selected.count), \(formatSize(selected.bytes))")
+                    .accessibilityLabel("Selected targets")
+                    .accessibilityValue("\(selected.count) folders, \(selected.items) files, \(formatSize(selected.bytes))")
                 Text("Close IDEs before cleaning")
                     .font(.system(size: 10))
                     .foregroundStyle(tertiaryTextColor)
@@ -884,8 +994,110 @@ struct ContentView: View {
         }
     }
 
-    private func actionButton(_ title: String, systemImage: String, tint: Color, prominent: Bool = false, action: @escaping () -> Void) -> some View {
-        LiquidActionButton(title: title, systemImage: systemImage, tint: tint, prominent: prominent, action: action)
+    private func actionButton(
+        _ title: String,
+        systemImage: String,
+        tint: Color,
+        prominent: Bool = false,
+        isActive: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        LiquidActionButton(
+            title: title,
+            systemImage: systemImage,
+            tint: tint,
+            prominent: prominent,
+            isActive: isActive,
+            action: action
+        )
+    }
+}
+
+/// Home stat tiles; keeps shimmer animation state local so a repeating animation does not invalidate the whole `ContentView` every frame (which made scrolling feel janky).
+private struct StatChipView: View {
+    let title: String
+    let value: String
+    let symbol: String
+    let color: Color
+    let shimmering: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var shimmerSweep = false
+
+    private var labelColor: Color { Color.white.opacity(0.94) }
+    private var borderColor: Color { Color.white.opacity(0.14) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(color)
+                    .frame(width: 20, height: 20)
+                    .background(
+                        Circle()
+                            .fill(color.opacity(0.15))
+                    )
+                Text(title)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(labelColor.opacity(0.9))
+            }
+
+            Text(value)
+                .font(.system(size: 15, weight: .bold, design: .rounded))
+                .foregroundStyle(labelColor)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
+        .frame(minHeight: 76, alignment: .leading)
+        .background(Color(red: 0.14, green: 0.12, blue: 0.28).opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(borderColor.opacity(0.9), lineWidth: 1)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+        }
+        .overlay {
+            if shimmering && !reduceMotion {
+                GeometryReader { proxy in
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    .white.opacity(0),
+                                    .white.opacity(0.12),
+                                    .white.opacity(0)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .frame(width: max(proxy.size.width * 0.42, 24))
+                        .offset(x: shimmerSweep ? proxy.size.width : -proxy.size.width)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .allowsHitTesting(false)
+            }
+        }
+        .onAppear { syncShimmerAnimation() }
+        .onChange(of: shimmering) { _ in syncShimmerAnimation() }
+        .onChange(of: reduceMotion) { _ in syncShimmerAnimation() }
+    }
+
+    private func syncShimmerAnimation() {
+        if shimmering && !reduceMotion {
+            shimmerSweep = false
+            withAnimation(.linear(duration: 1.45).repeatForever(autoreverses: false)) {
+                shimmerSweep = true
+            }
+        } else {
+            shimmerSweep = false
+        }
     }
 }
 
@@ -894,6 +1106,8 @@ private struct LiquidActionButton: View {
     let systemImage: String
     let tint: Color
     let prominent: Bool
+    /// When `prominent`, reflects whether the current app state matches this preset (filled vs outline).
+    var isActive: Bool = false
     let action: () -> Void
     @State private var isPressed = false
     @State private var isHovered = false
@@ -907,11 +1121,14 @@ private struct LiquidActionButton: View {
         }
         .scaleEffect(reduceMotion ? 1.0 : (isPressed ? 0.96 : 1.0))
         .brightness(isHovered ? 0.05 : 0)
+        .opacity(prominent && !isActive ? 0.78 : 1.0)
         .shadow(color: tint.opacity(isHovered ? 0.20 : 0.0), radius: isHovered ? 5 : 0, x: 0, y: isHovered ? 2 : 0)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.14), value: isHovered)
         .animation(reduceMotion ? nil : .spring(response: 0.24, dampingFraction: 0.66), value: isPressed)
-        .modifier(LiquidButtonStyleModifier(prominent: prominent))
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: isActive)
+        .modifier(LiquidButtonStyleModifier(prominent: prominent, isActive: isActive))
         .tint(tint)
+        .accessibilityAddTraits(isActive && prominent ? .isSelected : [])
         .onHover { hovering in
             isHovered = hovering
         }
@@ -1011,10 +1228,15 @@ private struct SectionCardModifier: ViewModifier {
 
 private struct LiquidButtonStyleModifier: ViewModifier {
     let prominent: Bool
+    let isActive: Bool
 
     func body(content: Content) -> some View {
         if prominent {
-            content.buttonStyle(.borderedProminent)
+            if isActive {
+                content.buttonStyle(.borderedProminent)
+            } else {
+                content.buttonStyle(.bordered)
+            }
         } else {
             content.buttonStyle(.bordered)
         }
