@@ -1,49 +1,53 @@
 # Mac Cache Cleaner
 
-A lightweight macOS desktop app to clear common cache folders, including developer-focused caches.
+macOS cache-cleaning utility with two desktop implementations in this repo:
+- `app.py`: Python + Tkinter app
+- `SwiftUIMacCacheCleaner/`: SwiftUI app (Swift Package)
 
-## Included cache targets
+## What it cleans
 
-- User cache: `~/Library/Caches`
-- User logs: `~/Library/Logs`
-- Xcode:
-  - `~/Library/Developer/Xcode/DerivedData`
-  - `~/Library/Developer/Xcode/Archives`
-  - `~/Library/Developer/Xcode/iOS DeviceSupport`
-- Android Studio caches: `~/Library/Caches/Google/AndroidStudio*`
-- Gradle cache: `~/.gradle/caches`
-- npm cache: `~/.npm`
-- Yarn cache: `~/.yarn`
-- CocoaPods cache: `~/.cocoapods`
+The apps target common cache/log folders, including:
+- `~/Library/Caches`
+- `~/Library/Logs`
+- `~/Library/Developer/Xcode/DerivedData`
+- `~/Library/Developer/Xcode/Archives`
+- `~/Library/Developer/Xcode/iOS DeviceSupport`
+- `~/Library/Caches/Google/AndroidStudio*`
+- `~/.gradle/caches`
+- `~/.npm`
+- `~/.yarn`
+- `~/.cocoapods`
 
-## Run
+## Run the Python app
 
 ```bash
 cd "/Users/abdulsamadkhan/Work/mac-cache-cleaner"
 python3 app.py
 ```
 
-## Built macOS app
-
-After packaging, the app bundle is at:
-
-- `dist/Mac Cache Cleaner.app`
-
-You can open it with:
+## Build and run the SwiftUI app
 
 ```bash
-open "dist/Mac Cache Cleaner.app"
+cd "/Users/abdulsamadkhan/Work/mac-cache-cleaner/SwiftUIMacCacheCleaner"
+swift run
 ```
 
-## How to use
+To build an app bundle:
 
-1. Click **Scan Sizes** to estimate current cache usage.
-2. Keep **recommended** targets selected (or choose all).
+```bash
+cd "/Users/abdulsamadkhan/Work/mac-cache-cleaner/SwiftUIMacCacheCleaner"
+./build_app.sh
+open "dist/Mac Cache Cleaner SwiftUI.app"
+```
+
+## Usage
+
+1. Click **Scan Sizes**.
+2. Keep recommended targets selected (or use **Select All**).
 3. Click **Clear Selected** and confirm.
 
-## Notes
+## Safety notes
 
-- The app deletes folder contents, not the folder itself.
-- Some files may be skipped if macOS denies access.
-- For large cleanups, close Xcode/Android Studio first.
-# mac-cache-cleaner
+- Only contents are removed; top-level target folders are retained.
+- Files may be skipped if macOS denies permission.
+- Close Xcode/Android Studio before large cleanups for best results.
