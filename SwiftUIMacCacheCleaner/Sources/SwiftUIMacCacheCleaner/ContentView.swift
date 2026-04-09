@@ -3,13 +3,14 @@ import AppKit
 
 struct ContentView: View {
     @ObservedObject var viewModel: CacheCleanerViewModel
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showConfirm = false
     @State private var pressedPrimaryAction: PrimaryAction?
     @State private var activePrimaryAction: PrimaryAction?
     @State private var animatedGaugeRatio: Double = 0
     @State private var gaugePulse: Bool = false
     @State private var gaugeShine: Bool = false
-    @State private var isOneTapPressed: Bool = false
     @State private var statShimmerSweep: Bool = false
     @State private var hoveredPrimaryAction: PrimaryAction?
     @Namespace private var modeSegmentAnimation
@@ -21,13 +22,21 @@ struct ContentView: View {
 
             // Subtle top chrome so content transitions cleanly below title bar.
             Rectangle()
-                .fill(Color(red: 0.39, green: 0.47, blue: 0.60).opacity(0.46))
-                .frame(height: 12)
+                .fill(
+                    LinearGradient(
+                        colors: colorScheme == .dark
+                            ? [Color.black.opacity(0.16), Color.clear]
+                            : [Color.black.opacity(0.045), Color.clear],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .frame(height: 8)
                 .ignoresSafeArea(edges: .top)
                 .frame(maxHeight: .infinity, alignment: .top)
 
             ScrollView(showsIndicators: false) {
-                VStack(spacing: 16) {
+                VStack(spacing: 12) {
                     topHeader
                     .padding(.top, 10)
                     quickCleanCard
@@ -56,13 +65,19 @@ struct ContentView: View {
         }
         .onAppear {
             animatedGaugeRatio = diskUsageRatio
-            withAnimation(.linear(duration: 1.45).repeatForever(autoreverses: false)) {
-                statShimmerSweep = true
+            if !reduceMotion {
+                withAnimation(.linear(duration: 1.45).repeatForever(autoreverses: false)) {
+                    statShimmerSweep = true
+                }
             }
         }
         .onChange(of: diskUsageRatio) { value in
-            withAnimation(.easeInOut(duration: 0.45)) {
+            if reduceMotion {
                 animatedGaugeRatio = value
+            } else {
+                withAnimation(.easeInOut(duration: 0.45)) {
+                    animatedGaugeRatio = value
+                }
             }
         }
         .onChange(of: activePrimaryAction) { action in
@@ -75,31 +90,50 @@ struct ContentView: View {
             guard !isBusy, activePrimaryAction == .scan else { return }
             triggerGaugeCompletionAnimation()
         }
-        .toolbarBackground(Color(red: 0.44, green: 0.51, blue: 0.64), for: .windowToolbar)
+        .toolbarBackground(toolbarGradient, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
-        .toolbarColorScheme(.light, for: .windowToolbar)
+        .toolbarColorScheme(colorScheme, for: .windowToolbar)
+        .preferredColorScheme(.light)
     }
 
     private var appBackground: some View {
         ZStack {
             LinearGradient(
-                colors: [
-                    Color(red: 0.47, green: 0.54, blue: 0.67),
-                    Color(red: 0.44, green: 0.51, blue: 0.64),
-                    Color(red: 0.41, green: 0.48, blue: 0.61)
-                ],
+                colors: colorScheme == .dark
+                    ? [
+                        Color(red: 0.06, green: 0.12, blue: 0.20),
+                        Color(red: 0.06, green: 0.10, blue: 0.18),
+                        Color(red: 0.05, green: 0.08, blue: 0.15)
+                    ]
+                    : [
+                        Color(red: 0.31, green: 0.68, blue: 0.98),
+                        Color(red: 0.52, green: 0.78, blue: 0.99),
+                        Color(red: 0.69, green: 0.85, blue: 1.00)
+                    ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
 
+            if colorScheme != .dark {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.10, green: 0.49, blue: 0.94).opacity(0.72),
+                        Color(red: 0.08, green: 0.33, blue: 0.80).opacity(0.58),
+                        .clear
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
+
             Circle()
-                .fill(Color(red: 0.08, green: 0.30, blue: 0.64).opacity(0.14))
+                .fill(Color.blue.opacity(colorScheme == .dark ? 0.12 : 0.12))
                 .frame(width: 420, height: 420)
                 .blur(radius: 120)
                 .offset(x: -260, y: -250)
 
             Circle()
-                .fill(Color(red: 0.14, green: 0.38, blue: 0.65).opacity(0.11))
+                .fill(Color.indigo.opacity(colorScheme == .dark ? 0.10 : 0.10))
                 .frame(width: 510, height: 510)
                 .blur(radius: 130)
                 .offset(x: 230, y: -120)
@@ -112,10 +146,10 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Mac Cache Cleaner")
                     .font(.system(size: 28, weight: .bold, design: .rounded))
-                    .foregroundStyle(Color(red: 0.05, green: 0.10, blue: 0.20))
+                    .foregroundStyle(primaryTextColor)
                 Text("Safe cleanup for cache, logs and temporary files")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Color(red: 0.14, green: 0.22, blue: 0.36))
+                    .foregroundStyle(secondaryTextColor)
             }
             Spacer()
             Image(nsImage: NSApplication.shared.applicationIconImage)
@@ -145,80 +179,114 @@ struct ContentView: View {
 
     private var quickCleanCard: some View {
         let selected = viewModel.selectedSummary()
-        return VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .center, spacing: 18) {
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 14) {
                 cleanerGauge(usedRatio: animatedGaugeRatio)
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Quick Clean")
+                    Text("Cleanup Summary")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Color(red: 0.15, green: 0.26, blue: 0.44))
+                        .foregroundStyle(secondaryTextColor)
                     Text(formatSize(selected.bytes))
-                        .font(.system(size: 38, weight: .heavy, design: .rounded))
-                        .foregroundStyle(Color(red: 0.11, green: 0.25, blue: 0.49))
+                        .font(.system(size: 42, weight: .heavy, design: .rounded))
+                        .foregroundStyle(primaryTextColor)
                     Text("Selected reclaimable size from \(selected.count) folders")
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Color(red: 0.26, green: 0.37, blue: 0.53))
-                    Button {
-                        withAnimation(.easeOut(duration: 0.08)) {
-                            isOneTapPressed = true
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) {
-                            withAnimation(.spring(response: 0.26, dampingFraction: 0.62)) {
-                                isOneTapPressed = false
-                            }
-                        }
-                        showConfirm = true
-                    } label: {
-                        Label("One-Tap Clean", systemImage: "bolt.fill")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 9)
-                            .background(
-                                Capsule()
-                                    .fill(Color(red: 0.99, green: 0.41, blue: 0.35))
-                            )
-                    }
-                    .scaleEffect(isOneTapPressed ? 0.95 : 1.0)
-                    .buttonStyle(.plain)
-                    .disabled(viewModel.isBusy || selected.count == 0)
+                        .foregroundStyle(tertiaryTextColor)
                 }
                 Spacer()
                 Label(viewModel.isBusy ? "Working" : "Ready", systemImage: viewModel.isBusy ? "clock.fill" : "checkmark.circle.fill")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(viewModel.isBusy ? Color(red: 0.41, green: 0.26, blue: 0.0) : Color(red: 1.0, green: 1.0, blue: 1.0))
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
+                    .padding(.vertical, 5)
                     .background(
                         Capsule()
                             .fill(viewModel.isBusy
                                 ? Color(red: 0.99, green: 0.74, blue: 0.35).opacity(0.72)
                                 : Color(red: 0.15, green: 0.73, blue: 0.37).opacity(0.92))
                     )
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Status")
+                    .accessibilityValue(viewModel.isBusy ? "Working" : "Ready")
             }
 
             HStack(spacing: 12) {
-                segmentedActionButton(.scan, title: "Scan", systemImage: "arrow.clockwise", tint: Color(red: 0.08, green: 0.53, blue: 0.98)) {
+                segmentedActionButton(
+                    .scan,
+                    title: "Scan",
+                    systemImage: "arrow.clockwise",
+                    topTint: Color(red: 0.26, green: 0.72, blue: 1.00),
+                    bottomTint: Color(red: 0.06, green: 0.54, blue: 0.97)
+                ) {
                     activePrimaryAction = .scan
                     Task { await viewModel.scanSizes() }
                 }
-                segmentedActionButton(.dryRun, title: "Dry Run", systemImage: "eye.fill", tint: Color(red: 0.31, green: 0.40, blue: 0.95)) {
+                segmentedActionButton(
+                    .dryRun,
+                    title: "Dry Run",
+                    systemImage: "eye.fill",
+                    topTint: Color(red: 0.43, green: 0.66, blue: 1.00),
+                    bottomTint: Color(red: 0.21, green: 0.45, blue: 0.91)
+                ) {
                     activePrimaryAction = .dryRun
                     Task { await viewModel.dryRunSelected() }
                 }
-                segmentedActionButton(.cleanSelected, title: "Clean", systemImage: "trash.fill", tint: Color(red: 0.99, green: 0.41, blue: 0.35)) {
+                segmentedActionButton(
+                    .cleanSelected,
+                    title: "Clean",
+                    systemImage: "trash.fill",
+                    topTint: Color(red: 1.00, green: 0.56, blue: 0.52),
+                    bottomTint: Color(red: 0.90, green: 0.32, blue: 0.31)
+                ) {
                     showConfirm = true
                 }
             }
+
         }
-        .padding(18)
+        .padding(14)
         .sectionCard(cornerRadius: 20)
     }
 
     private var diskUsageRatio: Double {
         guard viewModel.diskStats.total > 0 else { return 0 }
         return min(max(Double(viewModel.diskStats.used) / Double(viewModel.diskStats.total), 0), 1)
+    }
+
+    private var primaryTextColor: Color {
+        Color.black.opacity(0.92)
+    }
+
+    private var secondaryTextColor: Color {
+        Color.black.opacity(0.72)
+    }
+
+    private var tertiaryTextColor: Color {
+        Color.black.opacity(0.56)
+    }
+
+    private var accentBlue: Color {
+        Color(red: 0.12, green: 0.56, blue: 0.98)
+    }
+
+    private var toolbarGradient: LinearGradient {
+        LinearGradient(
+            colors: colorScheme == .dark
+                ? [
+                    Color(red: 0.08, green: 0.16, blue: 0.24),
+                    Color(red: 0.07, green: 0.12, blue: 0.20)
+                ]
+                : [
+                    Color(red: 0.35, green: 0.70, blue: 0.99),
+                    Color(red: 0.56, green: 0.80, blue: 1.00)
+                ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    private var borderColor: Color {
+        Color.black.opacity(0.16)
     }
 
     @ViewBuilder
@@ -253,10 +321,10 @@ struct ContentView: View {
 
                 VStack(spacing: 2) {
                     Text("\(Int(usedRatio * 100))%")
-                        .font(.system(size: 23, weight: .bold, design: .rounded))
+                        .font(.system(size: 32, weight: .bold, design: .rounded))
                         .foregroundStyle(Color(red: 0.13, green: 0.25, blue: 0.47))
                     Text("Used")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Color(red: 0.29, green: 0.40, blue: 0.57))
                 }
             }
@@ -295,6 +363,7 @@ struct ContentView: View {
     }
 
     private func triggerGaugeCompletionAnimation() {
+        guard !reduceMotion else { return }
         gaugePulse = true
         gaugeShine = false
         withAnimation(.easeInOut(duration: 0.15)) {
@@ -325,22 +394,22 @@ struct ContentView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-            .frame(height: 156, alignment: .top)
+            .padding(12)
+            .frame(height: 144, alignment: .top)
             .sectionCard()
 
             VStack(alignment: .leading, spacing: 10) {
                 sectionTitle("Mode")
                 discoveryModeSegmentedControl
                 Text(viewModel.discoveryModeDescription)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color(red: 0.14, green: 0.24, blue: 0.40))
+                    .font(.system(size: 12))
+                    .foregroundStyle(secondaryTextColor)
                     .lineLimit(3)
                     .minimumScaleFactor(0.9)
             }
             .frame(maxWidth: 380, alignment: .leading)
-            .padding(14)
-            .frame(height: 156, alignment: .top)
+            .padding(12)
+            .frame(height: 144, alignment: .top)
             .sectionCard()
         }
     }
@@ -355,25 +424,77 @@ struct ContentView: View {
         .padding(4)
         .background(
             RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .fill(Color(red: 0.74, green: 0.80, blue: 0.90).opacity(0.7))
+                .fill(Color(red: 0.91, green: 0.94, blue: 0.98).opacity(0.66))
                 .overlay(
                     RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .stroke(Color(red: 0.59, green: 0.69, blue: 0.84).opacity(0.65), lineWidth: 1)
+                        .stroke(borderColor, lineWidth: 1)
                 )
-                .shadow(color: Color(red: 0.23, green: 0.33, blue: 0.49).opacity(0.05), radius: 1.5, x: 0, y: 1)
+                .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.22 : 0.08), radius: 2, x: 0, y: 1)
         )
+    }
+
+    private func keyEquivalent(for actionID: PrimaryAction) -> KeyEquivalent {
+        switch actionID {
+        case .scan: return "s"
+        case .dryRun: return "p"
+        case .cleanSelected: return "k"
+        }
+    }
+
+    private func helpText(for actionID: PrimaryAction) -> String {
+        switch actionID {
+        case .scan:
+            return "Scan folders for reclaimable cache size (Cmd+S)"
+        case .dryRun:
+            return "Preview what cleanup would remove (Cmd+P)"
+        case .cleanSelected:
+            return "Open confirmation before deleting selected items (Cmd+K)"
+        }
+    }
+
+    private func accessibilityHint(for actionID: PrimaryAction) -> String {
+        switch actionID {
+        case .scan:
+            return "Refreshes reclaimable size."
+        case .dryRun:
+            return "Shows what would be cleaned."
+        case .cleanSelected:
+            return "Opens confirmation before cleaning."
+        }
+    }
+
+    private func sortPriority(for actionID: PrimaryAction) -> Double {
+        switch actionID {
+        case .scan:
+            return 300
+        case .dryRun:
+            return 290
+        case .cleanSelected:
+            return 280
+        }
+    }
+
+    private func modeAccessibilityLabel(for mode: CacheCleanerViewModel.DiscoveryMode, label: String) -> String {
+        if viewModel.discoveryMode == mode {
+            return "\(label), selected"
+        }
+        return label
     }
 
     private func modeSegmentButton(_ mode: CacheCleanerViewModel.DiscoveryMode, label: String) -> some View {
         let isSelected = viewModel.discoveryMode == mode
         return Button {
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+            if reduceMotion {
                 viewModel.updateDiscoveryMode(mode, silentlyScan: true)
+            } else {
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                    viewModel.updateDiscoveryMode(mode, silentlyScan: true)
+                }
             }
         } label: {
             Text(label)
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(isSelected ? .white : Color(red: 0.14, green: 0.24, blue: 0.40))
+                .foregroundStyle(isSelected ? .white : secondaryTextColor)
                 .frame(maxWidth: .infinity, minHeight: 34)
                 .padding(.horizontal, 6)
                 .contentShape(Rectangle())
@@ -383,7 +504,7 @@ struct ContentView: View {
                         .overlay {
                             if isSelected {
                                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(Color(red: 0.08, green: 0.47, blue: 0.95))
+                                    .fill(accentBlue)
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 8, style: .continuous)
                                             .stroke(Color.white.opacity(0.18), lineWidth: 1)
@@ -396,6 +517,9 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .disabled(viewModel.isBusy)
+        .help("Switch discovery mode to \(label)")
+        .accessibilityLabel(modeAccessibilityLabel(for: mode, label: label))
+        .accessibilityHint("Sets folder scanning strictness.")
     }
 
     private func statChip(title: String, value: String, symbol: String, color: Color, shimmering: Bool) -> some View {
@@ -411,26 +535,30 @@ struct ContentView: View {
                     )
                 Text(title)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color(red: 0.20, green: 0.32, blue: 0.49))
+                    .foregroundStyle(primaryTextColor.opacity(0.9))
             }
 
             Text(value)
                 .font(.system(size: 15, weight: .bold, design: .rounded))
-                .foregroundStyle(Color(red: 0.12, green: 0.25, blue: 0.47))
+                .foregroundStyle(primaryTextColor)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 10)
-        .padding(.vertical, 12)
-        .frame(minHeight: 84, alignment: .leading)
-        .background(Color.white.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(.vertical, 10)
+        .frame(minHeight: 76, alignment: .leading)
+        .background(Color(red: 0.92, green: 0.95, blue: 0.99).opacity(0.64), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.white.opacity(0.40), lineWidth: 1)
+                .stroke(borderColor.opacity(0.78), lineWidth: 1)
         }
         .overlay {
-            if shimmering {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.white.opacity(0.24), lineWidth: 0.5)
+        }
+        .overlay {
+            if shimmering && !reduceMotion {
                 GeometryReader { proxy in
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .fill(
@@ -460,10 +588,10 @@ struct ContentView: View {
                 Spacer()
                 Text("\(viewModel.targets.count) folders")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color(red: 0.20, green: 0.29, blue: 0.45))
+                    .foregroundStyle(secondaryTextColor)
             }
 
-            HStack(spacing: 8) {
+            HStack(spacing: 7) {
                 actionButton("Select All", systemImage: "checklist", tint: Color(red: 0.10, green: 0.56, blue: 0.99), prominent: true) {
                     viewModel.selectAll()
                 }
@@ -488,6 +616,7 @@ struct ContentView: View {
 
             LazyVStack(spacing: 6) {
                 ForEach(viewModel.targets) { target in
+                    let isSelected = viewModel.selections[target.id] ?? false
                     LiquidTargetRow(
                         target: target,
                         isOn: Binding(
@@ -495,6 +624,7 @@ struct ContentView: View {
                             set: { viewModel.selections[target.id] = $0 }
                         ),
                         sizeText: formatSize(viewModel.targetSizes[target.id] ?? 0),
+                        isSelected: isSelected,
                         isDisabled: viewModel.isBusy
                     )
                 }
@@ -527,7 +657,7 @@ struct ContentView: View {
                     }
                     Text(viewModel.operationProgressLabel)
                         .font(.system(size: 10))
-                        .foregroundStyle(Color(red: 0.18, green: 0.27, blue: 0.42))
+                        .foregroundStyle(secondaryTextColor)
                 }
             }
             HStack {
@@ -537,19 +667,25 @@ struct ContentView: View {
                 }
                 Text(viewModel.statusText)
                     .font(.system(size: 11))
-                    .foregroundStyle(Color(red: 0.12, green: 0.23, blue: 0.38))
+                    .foregroundStyle(primaryTextColor)
+                    .accessibilityLabel("Activity status")
+                    .accessibilityValue(viewModel.statusText)
                 Spacer()
                 let selected = viewModel.selectedSummary()
                 Text("Selected: \(selected.count) (\(formatSize(selected.bytes)))")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color(red: 0.17, green: 0.28, blue: 0.43))
+                    .foregroundStyle(secondaryTextColor)
+                    .accessibilityLabel("Selected folders")
+                    .accessibilityValue("\(selected.count), \(formatSize(selected.bytes))")
                 Text("Close IDEs before cleaning")
                     .font(.system(size: 10))
-                    .foregroundStyle(Color(red: 0.20, green: 0.30, blue: 0.45))
+                    .foregroundStyle(tertiaryTextColor)
+                    .accessibilityLabel("Tip")
+                    .accessibilityValue("Close IDEs before cleaning.")
             }
             Text(viewModel.lastOperationReport)
                 .font(.system(size: 10))
-                .foregroundStyle(Color(red: 0.18, green: 0.27, blue: 0.42))
+                .foregroundStyle(secondaryTextColor)
         }
         .padding(14)
         .sectionCard()
@@ -558,18 +694,19 @@ struct ContentView: View {
     private func sectionTitle(_ title: String) -> some View {
         HStack(spacing: 7) {
             Circle()
-                .fill(Color(red: 0.10, green: 0.57, blue: 0.99))
+                .fill(accentBlue)
                 .frame(width: 6, height: 6)
             Text(title)
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color(red: 0.08, green: 0.18, blue: 0.33))
+                .foregroundStyle(primaryTextColor)
         }
     }
 
-    private func segmentedActionButton(_ actionID: PrimaryAction, title: String, systemImage: String, tint: Color, action: @escaping () -> Void) -> some View {
+    private func segmentedActionButton(_ actionID: PrimaryAction, title: String, systemImage: String, topTint: Color, bottomTint: Color, action: @escaping () -> Void) -> some View {
         let isRunning = viewModel.isBusy && activePrimaryAction == actionID
         let isPressed = pressedPrimaryAction == actionID
         let isHovered = hoveredPrimaryAction == actionID
+        let fillOpacity = isRunning ? 0.93 : 1.0
         return Button(action: action) {
             HStack(spacing: 8) {
                 if isRunning {
@@ -580,26 +717,58 @@ struct ContentView: View {
                         .frame(width: 14, height: 14)
                 } else {
                     Image(systemName: systemImage)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(.white.opacity(0.95))
                 }
                 Text(title)
-                    .font(.system(size: 14, weight: .bold))
+                    .font(.system(size: 14, weight: .semibold))
             }
             .foregroundStyle(.white.opacity(0.98))
             .frame(maxWidth: .infinity, minHeight: 46)
             .contentShape(Rectangle())
             .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(tint.opacity(isRunning ? 0.88 : (isHovered ? 1.0 : 0.95)))
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                topTint.opacity(fillOpacity),
+                                bottomTint.opacity(fillOpacity)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 13, style: .continuous)
+                            .stroke(Color.white.opacity(isHovered ? 0.20 : 0.10), lineWidth: 1)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 13, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color.white.opacity(isHovered ? 0.08 : 0.04),
+                                        Color.white.opacity(0.0)
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                    )
             )
         }
-        .scaleEffect(isPressed ? 0.96 : 1.0)
-        .shadow(color: tint.opacity(isHovered ? 0.25 : 0.10), radius: isHovered ? 6 : 2, x: 0, y: isHovered ? 3 : 1)
-        .animation(.easeInOut(duration: 0.14), value: isHovered)
-        .animation(.spring(response: 0.24, dampingFraction: 0.66), value: isPressed)
+        .scaleEffect(reduceMotion ? 1.0 : (isPressed ? 0.96 : 1.0))
+        .shadow(color: bottomTint.opacity(isHovered ? 0.28 : 0.18), radius: isHovered ? 8 : 5, x: 0, y: isHovered ? 4 : 2)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.14), value: isHovered)
+        .animation(reduceMotion ? nil : .spring(response: 0.24, dampingFraction: 0.66), value: isPressed)
         .buttonStyle(.plain)
         .disabled(viewModel.isBusy)
+        .keyboardShortcut(keyEquivalent(for: actionID), modifiers: [.command])
+        .help(helpText(for: actionID))
+        .accessibilityLabel(title)
+        .accessibilityHint(accessibilityHint(for: actionID))
+        .accessibilityValue(isRunning ? "Running" : "Idle")
+        .accessibilitySortPriority(sortPriority(for: actionID))
         .onHover { hovering in
             hoveredPrimaryAction = hovering ? actionID : nil
         }
@@ -622,18 +791,19 @@ private struct LiquidActionButton: View {
     let action: () -> Void
     @State private var isPressed = false
     @State private var isHovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
-                .font(.system(size: prominent ? 13 : 11, weight: .semibold))
+                .font(.system(size: prominent ? 13 : 12, weight: .semibold))
                 .padding(.horizontal, prominent ? 8 : 4)
-                .padding(.vertical, prominent ? 3 : 0)
+                .padding(.vertical, prominent ? 4 : 2)
         }
-        .scaleEffect(isPressed ? 0.96 : 1.0)
+        .scaleEffect(reduceMotion ? 1.0 : (isPressed ? 0.96 : 1.0))
         .brightness(isHovered ? 0.05 : 0)
         .shadow(color: tint.opacity(isHovered ? 0.20 : 0.0), radius: isHovered ? 5 : 0, x: 0, y: isHovered ? 2 : 0)
-        .animation(.easeInOut(duration: 0.14), value: isHovered)
-        .animation(.spring(response: 0.24, dampingFraction: 0.66), value: isPressed)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.14), value: isHovered)
+        .animation(reduceMotion ? nil : .spring(response: 0.24, dampingFraction: 0.66), value: isPressed)
         .modifier(LiquidButtonStyleModifier(prominent: prominent))
         .tint(tint)
         .onHover { hovering in
@@ -650,6 +820,7 @@ private struct LiquidTargetRow: View {
     let target: CacheTarget
     @Binding var isOn: Bool
     let sizeText: String
+    let isSelected: Bool
     let isDisabled: Bool
     var body: some View {
         HStack(spacing: 10) {
@@ -657,13 +828,13 @@ private struct LiquidTargetRow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(target.label)
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color(red: 0.06, green: 0.14, blue: 0.28))
+                        .foregroundStyle(Color.black.opacity(0.90))
                     Text(target.pathPattern)
                         .font(.system(size: 9, weight: .regular, design: .monospaced))
-                        .foregroundStyle(Color(red: 0.21, green: 0.30, blue: 0.45))
+                        .foregroundStyle(Color.black.opacity(0.56))
                     Text(target.inclusionReason)
                         .font(.system(size: 9, weight: .regular))
-                        .foregroundStyle(Color(red: 0.25, green: 0.34, blue: 0.48))
+                        .foregroundStyle(Color.black.opacity(0.62))
                 }
             }
             .toggleStyle(.checkbox)
@@ -671,18 +842,34 @@ private struct LiquidTargetRow: View {
 
             Spacer()
 
-            Text(sizeText)
-                .font(.system(size: 10, weight: .bold, design: .rounded))
-                .foregroundStyle(Color(red: 0.07, green: 0.17, blue: 0.31))
+            HStack(spacing: 6) {
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color(red: 0.08, green: 0.56, blue: 0.99))
+                }
+                Text(sizeText)
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.black.opacity(0.84))
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(red: 0.66, green: 0.73, blue: 0.85).opacity(0.90))
+                .fill(Color.white.opacity(0.62))
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Color(red: 0.32, green: 0.43, blue: 0.62), lineWidth: 1)
+                        .stroke(
+                            isSelected
+                            ? Color(red: 0.16, green: 0.45, blue: 0.84).opacity(0.9)
+                            : Color.black.opacity(0.10),
+                            lineWidth: 1
+                        )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color.white.opacity(isSelected ? 0.55 : 0.35), lineWidth: 0.5)
                 )
         )
     }
@@ -690,16 +877,29 @@ private struct LiquidTargetRow: View {
 
 private extension View {
     func sectionCard(cornerRadius: CGFloat = 16) -> some View {
-        self
+        modifier(SectionCardModifier(cornerRadius: cornerRadius))
+    }
+}
+
+private struct SectionCardModifier: ViewModifier {
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        content
             .background {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Color(red: 0.55, green: 0.63, blue: 0.78).opacity(0.92))
+                    .fill(Color(red: 0.90, green: 0.93, blue: 0.97).opacity(0.72))
             }
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(Color(red: 0.28, green: 0.38, blue: 0.57).opacity(0.95), lineWidth: 1)
+                    .stroke(Color.black.opacity(0.16), lineWidth: 1)
             }
-            .shadow(color: Color(red: 0.04, green: 0.09, blue: 0.20).opacity(0.16), radius: 10, x: 0, y: 6)
+            .shadow(
+                color: Color.black.opacity(0.12),
+                radius: 9,
+                x: 0,
+                y: 5
+            )
     }
 }
 
@@ -715,7 +915,7 @@ private struct LiquidButtonStyleModifier: ViewModifier {
     }
 }
 
-private enum PrimaryAction {
+private enum PrimaryAction: Hashable {
     case scan
     case dryRun
     case cleanSelected
