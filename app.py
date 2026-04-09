@@ -3,6 +3,7 @@ import os
 import shutil
 import threading
 import glob
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 import tkinter as tk
@@ -30,6 +31,11 @@ CACHE_TARGETS = [
     CacheTarget("yarn", "Yarn cache (~/.yarn)", HOME / ".yarn", False),
     CacheTarget("cocoapods", "CocoaPods cache (~/.cocoapods)", HOME / ".cocoapods", False),
 ]
+
+
+def resource_path(relative_path: str) -> Path:
+    base_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base_dir / relative_path
 
 
 def format_size(size_bytes: int) -> str:
@@ -104,6 +110,7 @@ class CacheCleanerApp(tk.Tk):
         self.geometry("900x640")
         self.minsize(820, 560)
         self.configure(bg=self.BG_MAIN)
+        self._icon_image: tk.PhotoImage | None = None
 
         self.vars: dict[str, tk.BooleanVar] = {}
         self.size_labels: dict[str, tk.Label] = {}
@@ -111,8 +118,31 @@ class CacheCleanerApp(tk.Tk):
         self.storage_labels: dict[str, tk.Label] = {}
         self.total_cache_bytes = 0
 
+        self._set_app_icon()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        try:
+            self.createcommand("::tk::mac::Quit", self._on_close)
+        except tk.TclError:
+            pass
+
         self._build_ui()
         self.scan_sizes()
+
+    def _set_app_icon(self) -> None:
+        icon_path = resource_path("assets/app_icon.png")
+        if not icon_path.exists():
+            return
+        try:
+            self._icon_image = tk.PhotoImage(file=str(icon_path))
+            self.iconphoto(True, self._icon_image)
+        except tk.TclError:
+            # If icon decoding fails, keep app functional.
+            self._icon_image = None
+
+    def _on_close(self) -> None:
+        self.quit()
+        self.destroy()
+        os._exit(0)
 
     def _make_button(
         self,
