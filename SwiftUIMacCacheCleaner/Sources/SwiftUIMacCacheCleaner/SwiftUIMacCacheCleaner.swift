@@ -13,10 +13,9 @@ struct MacCacheCleanerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup("Mac Cache Cleaner") {
             ContentView(viewModel: viewModel)
                 .frame(minWidth: 920, minHeight: 640)
         }
-        .windowStyle(.hiddenTitleBar)
     }
 }

@@ -75,6 +75,9 @@ struct ContentView: View {
             guard !isBusy, activePrimaryAction == .scan else { return }
             triggerGaugeCompletionAnimation()
         }
+        .toolbarBackground(Color(red: 0.44, green: 0.51, blue: 0.64), for: .windowToolbar)
+        .toolbarBackground(.visible, for: .windowToolbar)
+        .toolbarColorScheme(.light, for: .windowToolbar)
     }
 
     private var appBackground: some View {
@@ -419,11 +422,12 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 10)
-        .padding(.vertical, 9)
-        .background(Color(red: 0.70, green: 0.76, blue: 0.88).opacity(0.88), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(.vertical, 12)
+        .frame(minHeight: 84, alignment: .leading)
+        .background(Color.white.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color(red: 0.47, green: 0.58, blue: 0.77), lineWidth: 1)
+                .stroke(Color.white.opacity(0.40), lineWidth: 1)
         }
         .overlay {
             if shimmering {
@@ -572,15 +576,15 @@ struct ContentView: View {
                     ProgressView()
                         .controlSize(.small)
                         .tint(.white)
-                        .scaleEffect(0.78)
-                        .frame(width: 10, height: 10)
+                        .scaleEffect(0.92)
+                        .frame(width: 14, height: 14)
                 } else {
                     Image(systemName: systemImage)
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.95))
                 }
                 Text(title)
-                    .font(.system(size: 12, weight: .bold))
+                    .font(.system(size: 14, weight: .bold))
             }
             .foregroundStyle(.white.opacity(0.98))
             .frame(maxWidth: .infinity, minHeight: 46)
@@ -621,8 +625,9 @@ private struct LiquidActionButton: View {
     var body: some View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
-                .font(.system(size: 11, weight: .semibold))
-                .padding(.horizontal, 4)
+                .font(.system(size: prominent ? 13 : 11, weight: .semibold))
+                .padding(.horizontal, prominent ? 8 : 4)
+                .padding(.vertical, prominent ? 3 : 0)
         }
         .scaleEffect(isPressed ? 0.96 : 1.0)
         .brightness(isHovered ? 0.05 : 0)
