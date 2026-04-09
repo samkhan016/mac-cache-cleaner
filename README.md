@@ -1,29 +1,13 @@
 # Mac Cache Cleaner
 
-macOS cache-cleaning utility with two desktop implementations in this repo:
-- `app.py`: Python + Tkinter app
-- `SwiftUIMacCacheCleaner/`: SwiftUI app (Swift Package)
+macOS cache-cleaning utility built as a native SwiftUI desktop app.
 
 ## What it cleans
 
-The apps target common cache/log folders, including:
-- `~/Library/Caches`
-- `~/Library/Logs`
-- `~/Library/Developer/Xcode/DerivedData`
-- `~/Library/Developer/Xcode/Archives`
-- `~/Library/Developer/Xcode/iOS DeviceSupport`
-- `~/Library/Caches/Google/AndroidStudio*`
-- `~/.gradle/caches`
-- `~/.npm`
-- `~/.yarn`
-- `~/.cocoapods`
-
-## Run the Python app
-
-```bash
-cd "/Users/abdulsamadkhan/Work/mac-cache-cleaner"
-python3 app.py
-```
+The app dynamically discovers safe cache folders on your Mac and only shows folders that actually exist.
+It supports:
+- `Strict` mode: conservative cache-only discovery
+- `Balanced` mode: broader cache/log/temp discovery
 
 ## Build and run the SwiftUI app
 
@@ -43,11 +27,13 @@ open "dist/Mac Cache Cleaner SwiftUI.app"
 ## Usage
 
 1. Click **Scan Sizes**.
-2. Keep recommended targets selected (or use **Select All**).
-3. Click **Clear Selected** and confirm.
+2. Pick **Strict** or **Balanced** discovery mode.
+3. Review target inclusion reasons shown for each folder.
+4. Keep recommended targets selected (or use **Select All**).
+5. Click **Clear Selected** and confirm.
 
 ## Safety notes
 
 - Only contents are removed; top-level target folders are retained.
 - Files may be skipped if macOS denies permission.
-- Close Xcode/Android Studio before large cleanups for best results.
+- Discovery is scoped to user-home locations with protected top-level folders excluded.
