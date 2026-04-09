@@ -54,8 +54,8 @@ struct ContentView: View {
             .background {
                 LinearGradient(
                     colors: [
-                        Color(red: 0.08, green: 0.05, blue: 0.16),
-                        Color(red: 0.05, green: 0.06, blue: 0.12)
+                        Color(red: 0.11, green: 0.08, blue: 0.19),
+                        Color(red: 0.08, green: 0.09, blue: 0.15)
                     ],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
@@ -88,7 +88,7 @@ struct ContentView: View {
                     .fill(
                         LinearGradient(
                             colors: [
-                                Color(red: 0.22, green: 0.12, blue: 0.42).opacity(0.35),
+                                Color(red: 0.28, green: 0.17, blue: 0.46).opacity(0.30),
                                 Color.clear
                             ],
                             startPoint: .top,
@@ -180,8 +180,8 @@ struct ContentView: View {
                         .fill(
                             LinearGradient(
                                 colors: [
-                                    Color(red: 0.46, green: 0.28, blue: 0.72),
-                                    Color(red: 0.30, green: 0.18, blue: 0.52)
+                                    Color(red: 0.52, green: 0.35, blue: 0.78),
+                                    Color(red: 0.38, green: 0.25, blue: 0.58)
                                 ],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
@@ -301,9 +301,9 @@ struct ContentView: View {
         ZStack {
             LinearGradient(
                 colors: [
-                    Color(red: 0.10, green: 0.06, blue: 0.22),
-                    Color(red: 0.06, green: 0.09, blue: 0.24),
-                    Color(red: 0.04, green: 0.07, blue: 0.18)
+                    Color(red: 0.14, green: 0.10, blue: 0.26),
+                    Color(red: 0.10, green: 0.13, blue: 0.28),
+                    Color(red: 0.08, green: 0.11, blue: 0.22)
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
@@ -311,8 +311,8 @@ struct ContentView: View {
 
             LinearGradient(
                 colors: [
-                    Color(red: 0.35, green: 0.20, blue: 0.55).opacity(0.42),
-                    Color(red: 0.12, green: 0.28, blue: 0.62).opacity(0.28),
+                    Color(red: 0.40, green: 0.25, blue: 0.60).opacity(0.36),
+                    Color(red: 0.18, green: 0.34, blue: 0.68).opacity(0.24),
                     .clear
                 ],
                 startPoint: .topLeading,
@@ -320,19 +320,19 @@ struct ContentView: View {
             )
 
             Circle()
-                .fill(Color(red: 0.45, green: 0.28, blue: 0.85).opacity(0.22))
+                .fill(Color(red: 0.50, green: 0.35, blue: 0.88).opacity(0.20))
                 .frame(width: 420, height: 420)
                 .blur(radius: 120)
                 .offset(x: -260, y: -250)
 
             Circle()
-                .fill(Color(red: 0.20, green: 0.45, blue: 0.95).opacity(0.20))
+                .fill(Color(red: 0.28, green: 0.52, blue: 0.98).opacity(0.18))
                 .frame(width: 510, height: 510)
                 .blur(radius: 130)
                 .offset(x: 230, y: -120)
 
             Circle()
-                .fill(Color(red: 0.55, green: 0.35, blue: 0.90).opacity(0.12))
+                .fill(Color(red: 0.60, green: 0.42, blue: 0.94).opacity(0.10))
                 .frame(width: 320, height: 320)
                 .blur(radius: 100)
                 .offset(x: 120, y: 280)
@@ -362,8 +362,8 @@ struct ContentView: View {
                         .fill(
                             LinearGradient(
                                 colors: [
-                                    Color(red: 0.48, green: 0.32, blue: 0.92),
-                                    Color(red: 0.18, green: 0.42, blue: 0.95)
+                                    Color(red: 0.54, green: 0.38, blue: 0.94),
+                                    Color(red: 0.28, green: 0.50, blue: 0.97)
                                 ],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
@@ -635,8 +635,8 @@ struct ContentView: View {
 
     private var homeQuickScanCircleButton: some View {
         let diameter: CGFloat = 132
-        let topTint = Color(red: 0.52, green: 0.38, blue: 0.98)
-        let bottomTint = Color(red: 0.12, green: 0.45, blue: 0.96)
+        let topTint = Color(red: 0.58, green: 0.45, blue: 0.99)
+        let bottomTint = Color(red: 0.22, green: 0.52, blue: 0.98)
         return Button {
             selectedSidebar = .discovery(.ultraSafe)
             activePrimaryAction = .scan
@@ -694,10 +694,10 @@ struct ContentView: View {
     private var modePrimaryCircleButton: some View {
         let phase = modePrimaryButtonPhase
         let diameter: CGFloat = 132
-        let scanTop = Color(red: 0.52, green: 0.38, blue: 0.98)
-        let scanBottom = Color(red: 0.12, green: 0.45, blue: 0.96)
-        let cleanTop = Color(red: 1.00, green: 0.56, blue: 0.52)
-        let cleanBottom = Color(red: 0.90, green: 0.32, blue: 0.31)
+        let scanTop = Color(red: 0.58, green: 0.45, blue: 0.99)
+        let scanBottom = Color(red: 0.22, green: 0.52, blue: 0.98)
+        let cleanTop = Color(red: 1.00, green: 0.62, blue: 0.58)
+        let cleanBottom = Color(red: 0.94, green: 0.42, blue: 0.40)
         let topTint = phase == .clean ? cleanTop : scanTop
         let bottomTint = phase == .clean ? cleanBottom : scanBottom
         let title = phase == .clean ? "Clean" : (phase == .scanAgain ? "Scan again" : "Scan")
@@ -811,14 +811,14 @@ struct ContentView: View {
     }
 
     private var accentBlue: Color {
-        Color(red: 0.55, green: 0.48, blue: 1.0)
+        Color(red: 0.62, green: 0.56, blue: 1.0)
     }
 
     private var toolbarGradient: LinearGradient {
         LinearGradient(
             colors: [
-                Color(red: 0.09, green: 0.06, blue: 0.18),
-                Color(red: 0.06, green: 0.08, blue: 0.20)
+                Color(red: 0.12, green: 0.09, blue: 0.22),
+                Color(red: 0.10, green: 0.11, blue: 0.24)
             ],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
@@ -872,7 +872,7 @@ struct ContentView: View {
                 actionButton(
                     "Select All",
                     systemImage: "checklist",
-                    tint: Color(red: 0.10, green: 0.56, blue: 0.99),
+                    tint: Color(red: 0.18, green: 0.60, blue: 0.99),
                     prominent: true,
                     isActive: selectionMatchesSelectAll
                 ) {
@@ -883,7 +883,7 @@ struct ContentView: View {
                 actionButton(
                     "Recommended",
                     systemImage: "star.fill",
-                    tint: Color(red: 0.48, green: 0.46, blue: 0.95),
+                    tint: Color(red: 0.54, green: 0.52, blue: 0.97),
                     prominent: true,
                     isActive: selectionMatchesRecommended
                 ) {
@@ -894,7 +894,7 @@ struct ContentView: View {
                 actionButton(
                     "Deselect All",
                     systemImage: "minus.circle.fill",
-                    tint: Color(red: 0.67, green: 0.38, blue: 0.88),
+                    tint: Color(red: 0.72, green: 0.45, blue: 0.91),
                     prominent: true,
                     isActive: selectionMatchesNone
                 ) {
@@ -942,7 +942,7 @@ struct ContentView: View {
                     if viewModel.operationProgress > 0 {
                         ProgressView(value: viewModel.operationProgress)
                             .progressViewStyle(.linear)
-                            .tint(Color(red: 0.50, green: 0.45, blue: 1.0))
+                            .tint(Color(red: 0.56, green: 0.52, blue: 1.0))
                     } else {
                         ProgressView()
                             .scaleEffect(0.8, anchor: .leading)
@@ -1053,7 +1053,7 @@ private struct StatChipView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 10)
         .frame(minHeight: 76, alignment: .leading)
-        .background(Color(red: 0.14, green: 0.12, blue: 0.28).opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Color(red: 0.18, green: 0.16, blue: 0.32).opacity(0.48), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(borderColor.opacity(0.9), lineWidth: 1)
@@ -1169,7 +1169,7 @@ private struct LiquidTargetRow: View {
                 if isSelected {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color(red: 0.55, green: 0.48, blue: 1.0))
+                        .foregroundStyle(Color(red: 0.62, green: 0.56, blue: 1.0))
                 }
                 Text(sizeText)
                     .font(.system(size: 10, weight: .bold, design: .rounded))
@@ -1180,12 +1180,12 @@ private struct LiquidTargetRow: View {
         .padding(.vertical, 7)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(red: 0.10, green: 0.08, blue: 0.20).opacity(0.85))
+                .fill(Color(red: 0.15, green: 0.12, blue: 0.25).opacity(0.78))
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .stroke(
                             isSelected
-                            ? Color(red: 0.45, green: 0.38, blue: 0.95).opacity(0.85)
+                            ? Color(red: 0.52, green: 0.45, blue: 0.98).opacity(0.82)
                             : Color.white.opacity(0.08),
                             lineWidth: 1
                         )
@@ -1211,14 +1211,14 @@ private struct SectionCardModifier: ViewModifier {
         content
             .background {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Color(red: 0.12, green: 0.10, blue: 0.22).opacity(0.72))
+                    .fill(Color(red: 0.16, green: 0.14, blue: 0.27).opacity(0.65))
             }
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .stroke(Color.white.opacity(0.12), lineWidth: 1)
             }
             .shadow(
-                color: Color.black.opacity(0.35),
+                color: Color.black.opacity(0.28),
                 radius: 12,
                 x: 0,
                 y: 6
