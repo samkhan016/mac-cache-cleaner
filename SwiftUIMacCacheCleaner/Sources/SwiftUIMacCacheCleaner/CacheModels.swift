@@ -14,6 +14,15 @@ struct DiskStats {
     let free: Int64
 }
 
+struct CleanupSummary: Equatable {
+    let freedBytes: Int64
+    let itemsDeleted: Int
+    let itemsFailed: Int
+    let inaccessibleFolders: Int
+    let unsafeFolders: Int
+    let completedAt: Date
+}
+
 func formatSize(_ bytes: Int64) -> String {
     let formatter = ByteCountFormatter()
     formatter.countStyle = .file

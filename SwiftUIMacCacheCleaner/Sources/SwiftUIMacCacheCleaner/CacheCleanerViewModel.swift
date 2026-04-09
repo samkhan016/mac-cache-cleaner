@@ -2,11 +2,50 @@ import Foundation
 
 @MainActor
 final class CacheCleanerViewModel: ObservableObject {
-    enum DiscoveryMode: String {
+    /// Sidebar rows: Home plus each discovery mode.
+    enum SidebarDestination: Hashable {
+        case home
+        case discovery(DiscoveryMode)
+    }
+
+    enum DiscoveryMode: String, CaseIterable, Identifiable {
         case ultraSafe = "Ultra Safe"
         case strict = "Strict"
         case balanced = "Balanced"
         case developerDeepClean = "Developer Deep Clean"
+
+        var id: String { rawValue }
+
+        var sidebarLabel: String {
+            switch self {
+            case .ultraSafe: return "Ultra Safe"
+            case .strict: return "Strict"
+            case .balanced: return "Balanced"
+            case .developerDeepClean: return "Dev Deep"
+            }
+        }
+
+        var sidebarSystemImage: String {
+            switch self {
+            case .ultraSafe: return "shield.checkered"
+            case .strict: return "lock.shield"
+            case .balanced: return "circle.grid.2x2"
+            case .developerDeepClean: return "hammer"
+            }
+        }
+    }
+
+    private struct ModeWorkspace: Equatable {
+        var targets: [CacheTarget]
+        var selections: [String: Bool]
+        var targetSizes: [String: Int64]
+        var totalCacheBytes: Int64
+        var hasCompletedScan: Bool
+        /// After a successful cleanup (until the user runs a visible scan again).
+        var hasCleanedSinceLastScan: Bool
+        var lastOperationReport: String
+        var statusText: String
+        var lastCleanupSummary: CleanupSummary?
     }
 
     @Published var discoveryMode: DiscoveryMode = .ultraSafe
@@ -21,6 +60,11 @@ final class CacheCleanerViewModel: ObservableObject {
     @Published var diskStats: DiskStats = DiskStats(total: 0, used: 0, free: 0)
     @Published var totalCacheBytes: Int64 = 0
     @Published var isSilentlyScanning: Bool = false
+    @Published var hasCompletedScan: Bool = false
+    @Published var hasCleanedSinceLastScan: Bool = false
+    @Published var lastCleanupSummary: CleanupSummary?
+
+    private var workspaces: [DiscoveryMode: ModeWorkspace] = [:]
 
     private enum OperationOutcome {
         case cancelled
@@ -32,20 +76,66 @@ final class CacheCleanerViewModel: ObservableObject {
     private var activeOperation: Task<OperationOutcome, Never>?
     private var activeOperationID: UUID?
 
+    func refreshDiskStats() {
+        diskStats = Self.getDiskStats()
+    }
+
     init() {
+        diskStats = Self.getDiskStats()
         refreshTargets()
         if targets.isEmpty {
-            diskStats = Self.getDiskStats()
+            statusText = "No known cache folders were found on this Mac."
         } else {
-            Task { await scanSizes() }
+            statusText = "Ready"
         }
     }
 
-    func updateDiscoveryMode(_ mode: DiscoveryMode, silentlyScan: Bool = false) {
+    func selectDiscoveryMode(_ mode: DiscoveryMode) {
+        guard !isBusy else { return }
         guard discoveryMode != mode else { return }
+        persistCurrentWorkspace()
         discoveryMode = mode
-        refreshTargets()
-        Task { await scanSizes(showProgressUI: !silentlyScan) }
+        if let existing = workspaces[mode] {
+            applyWorkspace(existing)
+        } else {
+            refreshTargets()
+            hasCompletedScan = false
+            hasCleanedSinceLastScan = false
+            lastCleanupSummary = nil
+            lastOperationReport = "No cleanup run yet."
+            if targets.isEmpty {
+                statusText = "No safe cache folders found for \(discoveryMode.rawValue.lowercased()) mode."
+                totalCacheBytes = 0
+            } else {
+                statusText = "Ready"
+            }
+        }
+    }
+
+    private func persistCurrentWorkspace() {
+        workspaces[discoveryMode] = ModeWorkspace(
+            targets: targets,
+            selections: selections,
+            targetSizes: targetSizes,
+            totalCacheBytes: totalCacheBytes,
+            hasCompletedScan: hasCompletedScan,
+            hasCleanedSinceLastScan: hasCleanedSinceLastScan,
+            lastOperationReport: lastOperationReport,
+            statusText: statusText,
+            lastCleanupSummary: lastCleanupSummary
+        )
+    }
+
+    private func applyWorkspace(_ workspace: ModeWorkspace) {
+        targets = workspace.targets
+        selections = workspace.selections
+        targetSizes = workspace.targetSizes
+        totalCacheBytes = workspace.totalCacheBytes
+        hasCompletedScan = workspace.hasCompletedScan
+        hasCleanedSinceLastScan = workspace.hasCleanedSinceLastScan
+        lastOperationReport = workspace.lastOperationReport
+        statusText = workspace.statusText
+        lastCleanupSummary = workspace.lastCleanupSummary
     }
 
     var discoveryModeDescription: String {
@@ -100,6 +190,7 @@ final class CacheCleanerViewModel: ObservableObject {
     }
 
     func scanSizes(showProgressUI: Bool = true) async {
+        let modeForOperation = discoveryMode
         isSilentlyScanning = !showProgressUI
         if showProgressUI {
             cancelCurrentOperation()
@@ -110,6 +201,7 @@ final class CacheCleanerViewModel: ObservableObject {
             operationProgress = 0
             operationProgressLabel = ""
         }
+        guard discoveryMode == modeForOperation else { return }
         guard !targets.isEmpty else {
             totalCacheBytes = 0
             diskStats = Self.getDiskStats()
@@ -148,6 +240,7 @@ final class CacheCleanerViewModel: ObservableObject {
         let outcome = await operation.value
 
         guard activeOperationID == operationID else { return }
+        guard discoveryMode == modeForOperation else { return }
         activeOperation = nil
         activeOperationID = nil
 
@@ -163,7 +256,9 @@ final class CacheCleanerViewModel: ObservableObject {
             totalCacheBytes = total
             diskStats = stats
             isSilentlyScanning = false
+            hasCompletedScan = true
             if showProgressUI {
+                hasCleanedSinceLastScan = false
                 statusText = "Scan complete. Cache footprint: \(formatSize(total))"
             }
         case .cleanup, .dryRun:
@@ -178,7 +273,9 @@ final class CacheCleanerViewModel: ObservableObject {
     }
 
     func clearSelected() async {
+        let modeForOperation = discoveryMode
         cancelCurrentOperation()
+        guard discoveryMode == modeForOperation else { return }
         let selected = selectedTargets()
         guard !selected.isEmpty else {
             statusText = "Select at least one cache target."
@@ -246,6 +343,7 @@ final class CacheCleanerViewModel: ObservableObject {
         let outcome = await operation.value
 
         guard activeOperationID == operationID else { return }
+        guard discoveryMode == modeForOperation else { return }
         activeOperation = nil
         activeOperationID = nil
 
@@ -260,11 +358,21 @@ final class CacheCleanerViewModel: ObservableObject {
             operationProgress = 1
             operationProgressLabel = "Cleanup finished."
             isBusy = false
-            await scanSizes()
+            hasCleanedSinceLastScan = true
+            lastCleanupSummary = CleanupSummary(
+                freedBytes: freedBytes,
+                itemsDeleted: itemsDeleted,
+                itemsFailed: itemsFailed,
+                inaccessibleFolders: inaccessibleFolders,
+                unsafeFolders: unsafeFolders,
+                completedAt: Date()
+            )
             lastOperationReport = "Cleanup report: removed \(itemsDeleted) items, skipped \(itemsFailed), inaccessible folders \(inaccessibleFolders), blocked unsafe folders \(unsafeFolders), freed about \(formatSize(freedBytes))."
             statusText = "Cleanup complete."
             operationProgress = 0
             operationProgressLabel = ""
+            await scanSizes(showProgressUI: false)
+            guard discoveryMode == modeForOperation else { return }
         case .scan, .dryRun:
             statusText = "Unexpected operation state."
             operationProgress = 0
@@ -274,7 +382,9 @@ final class CacheCleanerViewModel: ObservableObject {
     }
 
     func dryRunSelected() async {
+        let modeForOperation = discoveryMode
         cancelCurrentOperation()
+        guard discoveryMode == modeForOperation else { return }
         let selected = selectedTargets()
         guard !selected.isEmpty else {
             statusText = "Select at least one cache target."
@@ -317,6 +427,7 @@ final class CacheCleanerViewModel: ObservableObject {
         let outcome = await operation.value
 
         guard activeOperationID == operationID else { return }
+        guard discoveryMode == modeForOperation else { return }
         activeOperation = nil
         activeOperationID = nil
 
@@ -355,6 +466,7 @@ final class CacheCleanerViewModel: ObservableObject {
         targets = discovered
         selections = [:]
         targetSizes = [:]
+        totalCacheBytes = 0
         for target in discovered {
             selections[target.id] = oldSelections[target.id] ?? target.enabledByDefault
             targetSizes[target.id] = 0

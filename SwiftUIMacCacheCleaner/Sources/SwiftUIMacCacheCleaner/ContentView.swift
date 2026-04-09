@@ -6,47 +6,86 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showConfirm = false
-    @State private var pressedPrimaryAction: PrimaryAction?
     @State private var activePrimaryAction: PrimaryAction?
-    @State private var animatedGaugeRatio: Double = 0
-    @State private var gaugePulse: Bool = false
-    @State private var gaugeShine: Bool = false
     @State private var statShimmerSweep: Bool = false
-    @State private var hoveredPrimaryAction: PrimaryAction?
-    @Namespace private var modeSegmentAnimation
+    /// Drives `List(selection:)`; includes Home plus discovery modes.
+    @State private var selectedSidebar: CacheCleanerViewModel.SidebarDestination = .home
+    /// Keeps the sidebar open; paired with `hideSidebarToggleIfAvailable()`.
+    @State private var splitViewColumnVisibility: NavigationSplitViewVisibility = .all
     private let statsColumns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 4)
 
+    private var canClean: Bool {
+        viewModel.hasCompletedScan && viewModel.selectedSummary().count > 0
+    }
+
     var body: some View {
-        ZStack(alignment: .top) {
-            appBackground
-
-            // Subtle top chrome so content transitions cleanly below title bar.
-            Rectangle()
-                .fill(
-                    LinearGradient(
-                        colors: colorScheme == .dark
-                            ? [Color.black.opacity(0.16), Color.clear]
-                            : [Color.black.opacity(0.045), Color.clear],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .frame(height: 8)
-                .ignoresSafeArea(edges: .top)
-                .frame(maxHeight: .infinity, alignment: .top)
-
-            ScrollView(showsIndicators: false) {
-                VStack(spacing: 12) {
-                    topHeader
-                    .padding(.top, 10)
-                    quickCleanCard
-                    dashboardSection
-                    targetsSection
-                    activitySection
+        NavigationSplitView(columnVisibility: $splitViewColumnVisibility) {
+            List(selection: $selectedSidebar) {
+                Label("Home", systemImage: "house.fill")
+                    .tag(CacheCleanerViewModel.SidebarDestination.home)
+                ForEach(CacheCleanerViewModel.DiscoveryMode.allCases) { mode in
+                    Label(mode.sidebarLabel, systemImage: mode.sidebarSystemImage)
+                        .tag(CacheCleanerViewModel.SidebarDestination.discovery(mode))
                 }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 14)
             }
+            .listStyle(.sidebar)
+            .navigationSplitViewColumnWidth(min: 200, ideal: 220)
+            .navigationTitle("")
+            .padding(.top, 14)
+            .hideSidebarToggleIfAvailable()
+            .disabled(viewModel.isBusy)
+            .onAppear {
+                if case .discovery(let mode) = selectedSidebar {
+                    viewModel.selectDiscoveryMode(mode)
+                }
+            }
+            .onChange(of: selectedSidebar) { newDest in
+                guard !viewModel.isBusy else {
+                    selectedSidebar = .discovery(viewModel.discoveryMode)
+                    return
+                }
+                if case .discovery(let mode) = newDest {
+                    viewModel.selectDiscoveryMode(mode)
+                }
+            }
+        } detail: {
+            ZStack(alignment: .top) {
+                appBackground
+
+                Rectangle()
+                    .fill(
+                        LinearGradient(
+                            colors: colorScheme == .dark
+                                ? [Color.black.opacity(0.16), Color.clear]
+                                : [Color.black.opacity(0.045), Color.clear],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .frame(height: 8)
+                    .ignoresSafeArea(edges: .top)
+                    .frame(maxHeight: .infinity, alignment: .top)
+
+                Group {
+                    switch selectedSidebar {
+                    case .home:
+                        homeScrollContent
+                    case .discovery:
+                        modeScrollContent
+                    }
+                }
+            }
+            .navigationTitle("")
+            .hideSidebarToggleIfAvailable()
+        }
+        .onChange(of: splitViewColumnVisibility) { newValue in
+            if newValue == .detailOnly {
+                splitViewColumnVisibility = .all
+            }
+        }
+        .hideSidebarToggleIfAvailable()
+        .onAppear {
+            suppressNavigationSplitSidebarToolbarToggleIfNeeded()
         }
         .alert("Confirm Cleanup", isPresented: $showConfirm) {
             Button("Cancel", role: .cancel) {}
@@ -60,40 +99,88 @@ struct ContentView: View {
         .onChange(of: viewModel.isBusy) { isBusy in
             if isBusy == false {
                 activePrimaryAction = nil
-                pressedPrimaryAction = nil
             }
         }
         .onAppear {
-            animatedGaugeRatio = diskUsageRatio
             if !reduceMotion {
                 withAnimation(.linear(duration: 1.45).repeatForever(autoreverses: false)) {
                     statShimmerSweep = true
                 }
             }
         }
-        .onChange(of: diskUsageRatio) { value in
-            if reduceMotion {
-                animatedGaugeRatio = value
-            } else {
-                withAnimation(.easeInOut(duration: 0.45)) {
-                    animatedGaugeRatio = value
-                }
-            }
-        }
-        .onChange(of: activePrimaryAction) { action in
-            if action == .scan {
-                gaugePulse = false
-                gaugeShine = false
-            }
-        }
-        .onChange(of: viewModel.isBusy) { isBusy in
-            guard !isBusy, activePrimaryAction == .scan else { return }
-            triggerGaugeCompletionAnimation()
-        }
         .toolbarBackground(toolbarGradient, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
         .toolbarColorScheme(colorScheme, for: .windowToolbar)
         .preferredColorScheme(.light)
+    }
+
+    private var modeIntroCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(viewModel.discoveryMode.rawValue)
+                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .foregroundStyle(primaryTextColor)
+            Text(viewModel.discoveryModeDescription)
+                .font(.system(size: 12))
+                .foregroundStyle(secondaryTextColor)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .sectionCard(cornerRadius: 20)
+    }
+
+    private var scanPromptCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("Cleanup Targets")
+            Text("Run Scan to measure folders and show what can be reclaimed in this mode.")
+                .font(.system(size: 13))
+                .foregroundStyle(secondaryTextColor)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .sectionCard()
+    }
+
+    private var cleanupResultsCard: some View {
+        Group {
+            if let summary = viewModel.lastCleanupSummary {
+                VStack(alignment: .leading, spacing: 12) {
+                    sectionTitle("Last cleanup")
+                    Text(formatSize(summary.freedBytes))
+                        .font(.system(size: 36, weight: .heavy, design: .rounded))
+                        .foregroundStyle(primaryTextColor)
+                    Text("Space reclaimed (estimated)")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(tertiaryTextColor)
+                    Divider()
+                        .overlay(Color(red: 0.45, green: 0.55, blue: 0.72))
+                    HStack(spacing: 16) {
+                        resultMetric(title: "Items removed", value: "\(summary.itemsDeleted)")
+                        resultMetric(title: "Skipped", value: "\(summary.itemsFailed)")
+                        resultMetric(title: "Inaccessible", value: "\(summary.inaccessibleFolders)")
+                        resultMetric(title: "Blocked", value: "\(summary.unsafeFolders)")
+                    }
+                    Text(viewModel.lastOperationReport)
+                        .font(.system(size: 11))
+                        .foregroundStyle(tertiaryTextColor)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14)
+                .sectionCard()
+            }
+        }
+    }
+
+    private func resultMetric(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(secondaryTextColor)
+            Text(value)
+                .font(.system(size: 14, weight: .bold, design: .rounded))
+                .foregroundStyle(primaryTextColor)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var appBackground: some View {
@@ -181,8 +268,6 @@ struct ContentView: View {
         let selected = viewModel.selectedSummary()
         return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center, spacing: 14) {
-                cleanerGauge(usedRatio: animatedGaugeRatio)
-
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Cleanup Summary")
                         .font(.system(size: 14, weight: .semibold))
@@ -211,46 +296,297 @@ struct ContentView: View {
                     .accessibilityValue(viewModel.isBusy ? "Working" : "Ready")
             }
 
-            HStack(spacing: 12) {
-                segmentedActionButton(
-                    .scan,
-                    title: "Scan",
-                    systemImage: "arrow.clockwise",
-                    topTint: Color(red: 0.26, green: 0.72, blue: 1.00),
-                    bottomTint: Color(red: 0.06, green: 0.54, blue: 0.97)
-                ) {
-                    activePrimaryAction = .scan
-                    Task { await viewModel.scanSizes() }
-                }
-                segmentedActionButton(
-                    .dryRun,
-                    title: "Dry Run",
-                    systemImage: "eye.fill",
-                    topTint: Color(red: 0.43, green: 0.66, blue: 1.00),
-                    bottomTint: Color(red: 0.21, green: 0.45, blue: 0.91)
-                ) {
-                    activePrimaryAction = .dryRun
-                    Task { await viewModel.dryRunSelected() }
-                }
-                segmentedActionButton(
-                    .cleanSelected,
-                    title: "Clean",
-                    systemImage: "trash.fill",
-                    topTint: Color(red: 1.00, green: 0.56, blue: 0.52),
-                    bottomTint: Color(red: 0.90, green: 0.32, blue: 0.31)
-                ) {
-                    showConfirm = true
-                }
+            HStack {
+                Spacer(minLength: 0)
+                modePrimaryCircleButton
+                Spacer(minLength: 0)
             }
-
+            .padding(.top, 4)
         }
         .padding(14)
         .sectionCard(cornerRadius: 20)
     }
 
-    private var diskUsageRatio: Double {
-        guard viewModel.diskStats.total > 0 else { return 0 }
-        return min(max(Double(viewModel.diskStats.used) / Double(viewModel.diskStats.total), 0), 1)
+    private var homeScrollContent: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 12) {
+                topHeader
+                    .padding(.top, 10)
+                homeStorageSection
+                quickScanCard
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 14)
+        }
+        .onAppear {
+            viewModel.refreshDiskStats()
+        }
+    }
+
+    private var modeScrollContent: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 12) {
+                topHeader
+                    .padding(.top, 10)
+                modeIntroCard
+                quickCleanCard
+                if viewModel.lastCleanupSummary != nil {
+                    cleanupResultsCard
+                }
+                if viewModel.hasCompletedScan {
+                    targetsSection
+                } else if !viewModel.targets.isEmpty {
+                    scanPromptCard
+                }
+                activitySection
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 14)
+        }
+    }
+
+    private var homeStorageSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            sectionTitle("Storage")
+            LazyVGrid(columns: statsColumns, spacing: 8) {
+                statChip(title: "Total", value: formatSize(viewModel.diskStats.total), symbol: "internaldrive.fill", color: Color(red: 0.06, green: 0.53, blue: 0.98), shimmering: viewModel.isSilentlyScanning)
+                statChip(title: "Used", value: formatSize(viewModel.diskStats.used), symbol: "chart.bar.fill", color: Color(red: 0.96, green: 0.57, blue: 0.20), shimmering: viewModel.isSilentlyScanning)
+                statChip(title: "Free", value: formatSize(viewModel.diskStats.free), symbol: "circle.grid.2x2.fill", color: Color(red: 0.18, green: 0.70, blue: 0.39), shimmering: viewModel.isSilentlyScanning)
+                statChip(title: "Cache", value: formatSize(viewModel.totalCacheBytes), symbol: "sparkles", color: Color(red: 0.45, green: 0.41, blue: 0.95), shimmering: viewModel.isSilentlyScanning)
+            }
+            storageDiskChart
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .sectionCard()
+    }
+
+    private var storageDiskChart: some View {
+        let total = viewModel.diskStats.total
+        let used = viewModel.diskStats.used
+        let free = viewModel.diskStats.free
+        let usedFraction: CGFloat = total > 0 ? CGFloat(Double(used) / Double(total)) : 0
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Disk space")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(primaryTextColor)
+            if total > 0 {
+                GeometryReader { geo in
+                    let w = max(geo.size.width, 1)
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color(red: 0.18, green: 0.70, blue: 0.39).opacity(0.35))
+                        HStack(spacing: 0) {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [
+                                            Color(red: 0.98, green: 0.62, blue: 0.28),
+                                            Color(red: 0.96, green: 0.47, blue: 0.18)
+                                        ],
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                                .frame(width: w * usedFraction)
+                            Spacer(minLength: 0)
+                        }
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(borderColor.opacity(0.5), lineWidth: 1)
+                    }
+                }
+                .frame(height: 28)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Disk usage")
+                .accessibilityValue("\(Int(usedFraction * 100)) percent used, \(formatSize(used)) used, \(formatSize(free)) free")
+            } else {
+                Text("Storage information will appear when disk stats are available.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(secondaryTextColor)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 8)
+            }
+            HStack(spacing: 16) {
+                chartLegendDot(color: Color(red: 0.96, green: 0.57, blue: 0.20), title: "Used", value: formatSize(used))
+                chartLegendDot(color: Color(red: 0.18, green: 0.70, blue: 0.39), title: "Free", value: formatSize(free))
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    private func chartLegendDot(color: Color, title: String, value: String) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(color)
+                .frame(width: 10, height: 10)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(secondaryTextColor)
+                Text(value)
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundStyle(primaryTextColor)
+            }
+        }
+    }
+
+    private var quickScanCard: some View {
+        HStack {
+            Spacer(minLength: 0)
+            homeQuickScanCircleButton
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 14)
+    }
+
+    private var homeQuickScanCircleButton: some View {
+        let diameter: CGFloat = 132
+        let topTint = Color(red: 0.26, green: 0.72, blue: 1.00)
+        let bottomTint = Color(red: 0.06, green: 0.54, blue: 0.97)
+        return Button {
+            selectedSidebar = .discovery(.ultraSafe)
+            activePrimaryAction = .scan
+            Task { await viewModel.scanSizes() }
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [topTint, bottomTint],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .overlay {
+                        Circle()
+                            .stroke(Color.white.opacity(0.22), lineWidth: 1)
+                    }
+                    .shadow(color: bottomTint.opacity(0.35), radius: 12, x: 0, y: 6)
+                if viewModel.isBusy && activePrimaryAction == .scan {
+                    ProgressView()
+                        .controlSize(.large)
+                        .tint(.white)
+                } else {
+                    VStack(spacing: 8) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 32, weight: .bold))
+                            .symbolRenderingMode(.hierarchical)
+                        Text("Scan")
+                            .font(.system(size: 14, weight: .bold, design: .rounded))
+                            .multilineTextAlignment(.center)
+                    }
+                    .foregroundStyle(.white.opacity(0.98))
+                }
+            }
+            .frame(width: diameter, height: diameter)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(viewModel.isBusy)
+        .opacity(viewModel.isBusy && activePrimaryAction != .scan ? 0.45 : 1)
+        .keyboardShortcut("s", modifiers: [.command])
+        .help("Open Ultra Safe mode and scan folders (Cmd+S)")
+        .accessibilityLabel("Scan, Ultra Safe mode")
+        .accessibilityHint("Opens Ultra Safe and measures reclaimable cache size.")
+    }
+
+    private var modePrimaryButtonPhase: ModePrimaryPhase {
+        if viewModel.hasCompletedScan && !viewModel.hasCleanedSinceLastScan {
+            return .clean
+        }
+        return viewModel.hasCleanedSinceLastScan ? .scanAgain : .scan
+    }
+
+    private var modePrimaryCircleButton: some View {
+        let phase = modePrimaryButtonPhase
+        let diameter: CGFloat = 132
+        let scanTop = Color(red: 0.26, green: 0.72, blue: 1.00)
+        let scanBottom = Color(red: 0.06, green: 0.54, blue: 0.97)
+        let cleanTop = Color(red: 1.00, green: 0.56, blue: 0.52)
+        let cleanBottom = Color(red: 0.90, green: 0.32, blue: 0.31)
+        let topTint = phase == .clean ? cleanTop : scanTop
+        let bottomTint = phase == .clean ? cleanBottom : scanBottom
+        let title = phase == .clean ? "Clean" : (phase == .scanAgain ? "Scan again" : "Scan")
+        let symbol = phase == .clean ? "trash.fill" : "arrow.clockwise"
+        let isScanning = viewModel.isBusy && activePrimaryAction == .scan
+        let isCleaning = viewModel.isBusy && activePrimaryAction == .cleanSelected
+        let isRunning = isScanning || isCleaning
+        return Button {
+            switch phase {
+            case .scan, .scanAgain:
+                activePrimaryAction = .scan
+                Task { await viewModel.scanSizes() }
+            case .clean:
+                guard canClean else { return }
+                showConfirm = true
+            }
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [topTint, bottomTint],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .overlay {
+                        Circle()
+                            .stroke(Color.white.opacity(0.22), lineWidth: 1)
+                    }
+                    .shadow(color: bottomTint.opacity(0.35), radius: 12, x: 0, y: 6)
+                if isRunning {
+                    ProgressView()
+                        .controlSize(.large)
+                        .tint(.white)
+                } else {
+                    VStack(spacing: 8) {
+                        Image(systemName: symbol)
+                            .font(.system(size: 32, weight: .bold))
+                            .symbolRenderingMode(.hierarchical)
+                        Text(title)
+                            .font(.system(size: 14, weight: .bold, design: .rounded))
+                            .multilineTextAlignment(.center)
+                            .minimumScaleFactor(0.85)
+                            .lineLimit(2)
+                    }
+                    .foregroundStyle(.white.opacity(0.98))
+                }
+            }
+            .frame(width: diameter, height: diameter)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(viewModel.isBusy || (phase == .clean && !canClean))
+        .keyboardShortcut(phase == .clean ? "k" : "s", modifiers: [.command])
+        .help(modePrimaryHelp(phase: phase))
+        .accessibilityLabel(title)
+        .accessibilityHint(modePrimaryAccessibilityHint(phase: phase))
+    }
+
+    private func modePrimaryHelp(phase: ModePrimaryPhase) -> String {
+        switch phase {
+        case .scan:
+            return "Scan folders for reclaimable cache size (Cmd+S)"
+        case .clean:
+            return "Clean selected folders after confirmation (Cmd+K)"
+        case .scanAgain:
+            return "Run a fresh scan (Cmd+S)"
+        }
+    }
+
+    private func modePrimaryAccessibilityHint(phase: ModePrimaryPhase) -> String {
+        switch phase {
+        case .scan:
+            return "Measures reclaimable cache size for this mode."
+        case .clean:
+            return "Opens confirmation before deleting selected cache folders."
+        case .scanAgain:
+            return "Starts a new scan after the last cleanup."
+        }
     }
 
     private var primaryTextColor: Color {
@@ -287,239 +623,6 @@ struct ContentView: View {
 
     private var borderColor: Color {
         Color.black.opacity(0.16)
-    }
-
-    @ViewBuilder
-    private func cleanerGauge(usedRatio: Double) -> some View {
-        VStack(spacing: 4) {
-            ZStack {
-                Circle()
-                    .fill(Color(red: 0.24, green: 0.66, blue: 1.0).opacity(gaugePulse ? 0.18 : 0))
-                    .scaleEffect(gaugePulse ? 1.12 : 0.92)
-                    .frame(width: 126, height: 126)
-                    .animation(.easeOut(duration: 0.75), value: gaugePulse)
-
-                Circle()
-                    .stroke(Color(red: 0.85, green: 0.90, blue: 0.97), lineWidth: 12)
-                    .frame(width: 116, height: 116)
-
-                Circle()
-                    .trim(from: 0, to: usedRatio)
-                    .stroke(
-                        AngularGradient(
-                            colors: [
-                                Color(red: 0.08, green: 0.53, blue: 0.98),
-                                Color(red: 0.31, green: 0.40, blue: 0.95),
-                                Color(red: 0.11, green: 0.70, blue: 0.53)
-                            ],
-                            center: .center
-                        ),
-                        style: StrokeStyle(lineWidth: 12, lineCap: .round)
-                    )
-                    .rotationEffect(.degrees(-90))
-                    .frame(width: 116, height: 116)
-
-                VStack(spacing: 2) {
-                    Text("\(Int(usedRatio * 100))%")
-                        .font(.system(size: 32, weight: .bold, design: .rounded))
-                        .foregroundStyle(Color(red: 0.13, green: 0.25, blue: 0.47))
-                    Text("Used")
-                        .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color(red: 0.29, green: 0.40, blue: 0.57))
-                }
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 58, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                .white.opacity(0),
-                                .white.opacity(0.55),
-                                .white.opacity(0)
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .frame(width: 18, height: 110)
-                    .rotationEffect(.degrees(20))
-                    .offset(x: gaugeShine ? 72 : -72)
-                    .opacity(gaugeShine ? 0.9 : 0)
-                    .blendMode(.screen)
-                    .animation(.easeInOut(duration: 0.65), value: gaugeShine)
-                    .clipped()
-            }
-            .frame(width: 132, height: 132)
-
-            VStack(spacing: 1) {
-                Text("Junk Files")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(Color(red: 0.23, green: 0.35, blue: 0.53))
-                Text(formatSize(viewModel.totalCacheBytes))
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Color(red: 0.14, green: 0.29, blue: 0.49))
-            }
-        }
-    }
-
-    private func triggerGaugeCompletionAnimation() {
-        guard !reduceMotion else { return }
-        gaugePulse = true
-        gaugeShine = false
-        withAnimation(.easeInOut(duration: 0.15)) {
-            gaugeShine = true
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.70) {
-            gaugeShine = false
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.95) {
-            gaugePulse = false
-        }
-    }
-
-    private var heroSection: some View {
-        EmptyView()
-    }
-
-    private var dashboardSection: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 10) {
-                sectionTitle("Storage")
-                LazyVGrid(columns: statsColumns, spacing: 8) {
-                    statChip(title: "Total", value: formatSize(viewModel.diskStats.total), symbol: "internaldrive.fill", color: Color(red: 0.06, green: 0.53, blue: 0.98), shimmering: viewModel.isSilentlyScanning)
-                    statChip(title: "Used", value: formatSize(viewModel.diskStats.used), symbol: "chart.bar.fill", color: Color(red: 0.96, green: 0.57, blue: 0.20), shimmering: viewModel.isSilentlyScanning)
-                    statChip(title: "Free", value: formatSize(viewModel.diskStats.free), symbol: "circle.grid.2x2.fill", color: Color(red: 0.18, green: 0.70, blue: 0.39), shimmering: viewModel.isSilentlyScanning)
-                    statChip(title: "Cache", value: formatSize(viewModel.totalCacheBytes), symbol: "sparkles", color: Color(red: 0.45, green: 0.41, blue: 0.95), shimmering: viewModel.isSilentlyScanning)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(12)
-            .frame(height: 144, alignment: .top)
-            .sectionCard()
-
-            VStack(alignment: .leading, spacing: 10) {
-                sectionTitle("Mode")
-                discoveryModeSegmentedControl
-                Text(viewModel.discoveryModeDescription)
-                    .font(.system(size: 12))
-                    .foregroundStyle(secondaryTextColor)
-                    .lineLimit(3)
-                    .minimumScaleFactor(0.9)
-            }
-            .frame(maxWidth: 380, alignment: .leading)
-            .padding(12)
-            .frame(height: 144, alignment: .top)
-            .sectionCard()
-        }
-    }
-
-    private var discoveryModeSegmentedControl: some View {
-        HStack(spacing: 6) {
-            modeSegmentButton(.ultraSafe, label: "Ultra Safe")
-            modeSegmentButton(.strict, label: "Strict")
-            modeSegmentButton(.balanced, label: "Balanced")
-            modeSegmentButton(.developerDeepClean, label: "Dev Deep")
-        }
-        .padding(4)
-        .background(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .fill(Color(red: 0.91, green: 0.94, blue: 0.98).opacity(0.66))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .stroke(borderColor, lineWidth: 1)
-                )
-                .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.22 : 0.08), radius: 2, x: 0, y: 1)
-        )
-    }
-
-    private func keyEquivalent(for actionID: PrimaryAction) -> KeyEquivalent {
-        switch actionID {
-        case .scan: return "s"
-        case .dryRun: return "p"
-        case .cleanSelected: return "k"
-        }
-    }
-
-    private func helpText(for actionID: PrimaryAction) -> String {
-        switch actionID {
-        case .scan:
-            return "Scan folders for reclaimable cache size (Cmd+S)"
-        case .dryRun:
-            return "Preview what cleanup would remove (Cmd+P)"
-        case .cleanSelected:
-            return "Open confirmation before deleting selected items (Cmd+K)"
-        }
-    }
-
-    private func accessibilityHint(for actionID: PrimaryAction) -> String {
-        switch actionID {
-        case .scan:
-            return "Refreshes reclaimable size."
-        case .dryRun:
-            return "Shows what would be cleaned."
-        case .cleanSelected:
-            return "Opens confirmation before cleaning."
-        }
-    }
-
-    private func sortPriority(for actionID: PrimaryAction) -> Double {
-        switch actionID {
-        case .scan:
-            return 300
-        case .dryRun:
-            return 290
-        case .cleanSelected:
-            return 280
-        }
-    }
-
-    private func modeAccessibilityLabel(for mode: CacheCleanerViewModel.DiscoveryMode, label: String) -> String {
-        if viewModel.discoveryMode == mode {
-            return "\(label), selected"
-        }
-        return label
-    }
-
-    private func modeSegmentButton(_ mode: CacheCleanerViewModel.DiscoveryMode, label: String) -> some View {
-        let isSelected = viewModel.discoveryMode == mode
-        return Button {
-            if reduceMotion {
-                viewModel.updateDiscoveryMode(mode, silentlyScan: true)
-            } else {
-                withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-                    viewModel.updateDiscoveryMode(mode, silentlyScan: true)
-                }
-            }
-        } label: {
-            Text(label)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(isSelected ? .white : secondaryTextColor)
-                .frame(maxWidth: .infinity, minHeight: 34)
-                .padding(.horizontal, 6)
-                .contentShape(Rectangle())
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(.clear)
-                        .overlay {
-                            if isSelected {
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(accentBlue)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                            .stroke(Color.white.opacity(0.18), lineWidth: 1)
-                                    )
-                                    .shadow(color: Color(red: 0.06, green: 0.29, blue: 0.65).opacity(0.18), radius: 3, x: 0, y: 1)
-                                    .matchedGeometryEffect(id: "modeSegmentSelection", in: modeSegmentAnimation)
-                            }
-                        }
-                )
-        }
-        .buttonStyle(.plain)
-        .disabled(viewModel.isBusy)
-        .help("Switch discovery mode to \(label)")
-        .accessibilityLabel(modeAccessibilityLabel(for: mode, label: label))
-        .accessibilityHint("Sets folder scanning strictness.")
     }
 
     private func statChip(title: String, value: String, symbol: String, color: Color, shimmering: Bool) -> some View {
@@ -634,14 +737,6 @@ struct ContentView: View {
         .sectionCard()
     }
 
-    private var segmentedPrimaryActions: some View {
-        EmptyView()
-    }
-
-    private var separatorLine: some View {
-        EmptyView()
-    }
-
     private var activitySection: some View {
         VStack(alignment: .leading, spacing: 6) {
             sectionTitle("Activity")
@@ -700,82 +795,6 @@ struct ContentView: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(primaryTextColor)
         }
-    }
-
-    private func segmentedActionButton(_ actionID: PrimaryAction, title: String, systemImage: String, topTint: Color, bottomTint: Color, action: @escaping () -> Void) -> some View {
-        let isRunning = viewModel.isBusy && activePrimaryAction == actionID
-        let isPressed = pressedPrimaryAction == actionID
-        let isHovered = hoveredPrimaryAction == actionID
-        let fillOpacity = isRunning ? 0.93 : 1.0
-        return Button(action: action) {
-            HStack(spacing: 8) {
-                if isRunning {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(.white)
-                        .scaleEffect(0.92)
-                        .frame(width: 14, height: 14)
-                } else {
-                    Image(systemName: systemImage)
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.95))
-                }
-                Text(title)
-                    .font(.system(size: 14, weight: .semibold))
-            }
-            .foregroundStyle(.white.opacity(0.98))
-            .frame(maxWidth: .infinity, minHeight: 46)
-            .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                topTint.opacity(fillOpacity),
-                                bottomTint.opacity(fillOpacity)
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 13, style: .continuous)
-                            .stroke(Color.white.opacity(isHovered ? 0.20 : 0.10), lineWidth: 1)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 13, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [
-                                        Color.white.opacity(isHovered ? 0.08 : 0.04),
-                                        Color.white.opacity(0.0)
-                                    ],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                            )
-                    )
-            )
-        }
-        .scaleEffect(reduceMotion ? 1.0 : (isPressed ? 0.96 : 1.0))
-        .shadow(color: bottomTint.opacity(isHovered ? 0.28 : 0.18), radius: isHovered ? 8 : 5, x: 0, y: isHovered ? 4 : 2)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.14), value: isHovered)
-        .animation(reduceMotion ? nil : .spring(response: 0.24, dampingFraction: 0.66), value: isPressed)
-        .buttonStyle(.plain)
-        .disabled(viewModel.isBusy)
-        .keyboardShortcut(keyEquivalent(for: actionID), modifiers: [.command])
-        .help(helpText(for: actionID))
-        .accessibilityLabel(title)
-        .accessibilityHint(accessibilityHint(for: actionID))
-        .accessibilityValue(isRunning ? "Running" : "Idle")
-        .accessibilitySortPriority(sortPriority(for: actionID))
-        .onHover { hovering in
-            hoveredPrimaryAction = hovering ? actionID : nil
-        }
-        .simultaneousGesture(DragGesture(minimumDistance: 0)
-            .onChanged { _ in pressedPrimaryAction = actionID }
-            .onEnded { _ in pressedPrimaryAction = nil }
-        )
     }
 
     private func actionButton(_ title: String, systemImage: String, tint: Color, prominent: Bool = false, action: @escaping () -> Void) -> some View {
@@ -915,8 +934,40 @@ private struct LiquidButtonStyleModifier: ViewModifier {
     }
 }
 
+private extension View {
+    /// Removes the split-view sidebar toggle from the window toolbar (macOS 14+). Older systems rely on pinned column visibility.
+    @ViewBuilder
+    func hideSidebarToggleIfAvailable() -> some View {
+        if #available(macOS 14.0, *) {
+            self.toolbar(removing: .sidebarToggle)
+        } else {
+            self
+        }
+    }
+}
+
+/// Hides the system sidebar toggle when SwiftUI's `toolbar(removing:)` is unavailable (macOS 13).
+private func suppressNavigationSplitSidebarToolbarToggleIfNeeded() {
+    if #available(macOS 14.0, *) { return }
+    DispatchQueue.main.async {
+        for window in NSApp.windows {
+            window.toolbar?.items.forEach { item in
+                let id = item.itemIdentifier.rawValue
+                guard id.localizedCaseInsensitiveContains("sidebar") else { return }
+                item.view?.isHidden = true
+                item.menuFormRepresentation?.view?.isHidden = true
+            }
+        }
+    }
+}
+
 private enum PrimaryAction: Hashable {
     case scan
-    case dryRun
     case cleanSelected
+}
+
+private enum ModePrimaryPhase {
+    case scan
+    case clean
+    case scanAgain
 }

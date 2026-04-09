@@ -13,9 +13,17 @@ struct MacCacheCleanerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        WindowGroup("Mac Cache Cleaner") {
+        WindowGroup {
             ContentView(viewModel: viewModel)
-                .frame(minWidth: 920, minHeight: 640)
+                .frame(minWidth: 980, minHeight: 640)
+        }
+        .commands {
+            CommandMenu("Actions") {
+                Button("Dry Run…") {
+                    Task { await viewModel.dryRunSelected() }
+                }
+                .keyboardShortcut("p", modifiers: .command)
+            }
         }
     }
 }
