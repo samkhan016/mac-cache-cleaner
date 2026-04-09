@@ -3,18 +3,34 @@ import Foundation
 @MainActor
 final class CacheCleanerViewModel: ObservableObject {
     enum DiscoveryMode: String {
+        case ultraSafe = "Ultra Safe"
         case strict = "Strict"
         case balanced = "Balanced"
+        case developerDeepClean = "Developer Deep Clean"
     }
 
-    @Published var discoveryMode: DiscoveryMode = .strict
+    @Published var discoveryMode: DiscoveryMode = .ultraSafe
     @Published var targets: [CacheTarget] = []
     @Published var selections: [String: Bool] = [:]
     @Published var targetSizes: [String: Int64] = [:]
     @Published var statusText: String = "Ready"
+    @Published var lastOperationReport: String = "No cleanup run yet."
     @Published var isBusy: Bool = false
+    @Published var operationProgress: Double = 0
+    @Published var operationProgressLabel: String = ""
     @Published var diskStats: DiskStats = DiskStats(total: 0, used: 0, free: 0)
     @Published var totalCacheBytes: Int64 = 0
+    @Published var isSilentlyScanning: Bool = false
+
+    private enum OperationOutcome {
+        case cancelled
+        case scan(sizes: [String: Int64], total: Int64, diskStats: DiskStats)
+        case cleanup(itemsDeleted: Int, itemsFailed: Int, inaccessibleFolders: Int, unsafeFolders: Int, freedBytes: Int64)
+        case dryRun(itemsEstimated: Int, inaccessibleFolders: Int, unsafeFolders: Int, estimatedFreed: Int64)
+    }
+
+    private var activeOperation: Task<OperationOutcome, Never>?
+    private var activeOperationID: UUID?
 
     init() {
         refreshTargets()
@@ -25,11 +41,24 @@ final class CacheCleanerViewModel: ObservableObject {
         }
     }
 
-    func updateDiscoveryMode(_ mode: DiscoveryMode) {
+    func updateDiscoveryMode(_ mode: DiscoveryMode, silentlyScan: Bool = false) {
         guard discoveryMode != mode else { return }
         discoveryMode = mode
         refreshTargets()
-        Task { await scanSizes() }
+        Task { await scanSizes(showProgressUI: !silentlyScan) }
+    }
+
+    var discoveryModeDescription: String {
+        switch discoveryMode {
+        case .ultraSafe:
+            return "Ultra Safe cleans only ~/Library/Caches and is best for quick low-risk cleanup."
+        case .strict:
+            return "Strict adds app container cache locations and conservative Xcode/Simulator cache roots."
+        case .balanced:
+            return "Balanced includes Strict plus common logs and temporary folders for broader cleanup."
+        case .developerDeepClean:
+            return "Developer Deep Clean includes Balanced plus optional developer tool caches (for example Xcode, Android/Gradle, JetBrains, Node, and Python)."
+        }
     }
 
     func selectAll() {
@@ -50,37 +79,106 @@ final class CacheCleanerViewModel: ObservableObject {
         targets.filter { selections[$0.id] == true }
     }
 
-    func scanSizes() async {
+    func selectedSummary() -> (count: Int, bytes: Int64) {
+        let selected = selectedTargets()
+        let bytes = selected.reduce(Int64(0)) { partial, target in
+            partial + (targetSizes[target.id] ?? 0)
+        }
+        return (selected.count, bytes)
+    }
+
+    func cancelCurrentOperation() {
+        guard isBusy else { return }
+        activeOperation?.cancel()
+        activeOperation = nil
+        activeOperationID = nil
+        isBusy = false
+        operationProgress = 0
+        operationProgressLabel = ""
+        statusText = "Operation cancelled."
+        lastOperationReport = "Last operation was cancelled."
+    }
+
+    func scanSizes(showProgressUI: Bool = true) async {
+        isSilentlyScanning = !showProgressUI
+        if showProgressUI {
+            cancelCurrentOperation()
+        } else {
+            activeOperation?.cancel()
+            activeOperation = nil
+            activeOperationID = nil
+            operationProgress = 0
+            operationProgressLabel = ""
+        }
         guard !targets.isEmpty else {
             totalCacheBytes = 0
             diskStats = Self.getDiskStats()
-            statusText = "No known cache folders were found on this Mac."
+            isSilentlyScanning = false
+            if showProgressUI {
+                statusText = "No known cache folders were found on this Mac."
+            }
             return
         }
-        isBusy = true
-        statusText = "Scanning cache sizes..."
+        if showProgressUI {
+            isBusy = true
+            statusText = "Scanning cache sizes..."
+        }
         let targetsSnapshot = targets
+        let operationID = UUID()
+        activeOperationID = operationID
 
-        let result = await Task.detached(priority: .userInitiated) {
+        let operation = Task.detached(priority: .userInitiated) { () -> OperationOutcome in
             var localSizes: [String: Int64] = [:]
             var localTotal: Int64 = 0
             for target in targetsSnapshot {
+                if Task.isCancelled { return .cancelled }
                 let resolved = Self.resolvePaths(pattern: target.pathPattern)
-                let size = resolved.reduce(Int64(0)) { $0 + Self.sizeOfPath($1) }
+                var size: Int64 = 0
+                for path in resolved {
+                    if Task.isCancelled { return .cancelled }
+                    size += Self.sizeOfPath(path)
+                }
                 localSizes[target.id] = size
                 localTotal += size
             }
-            return (localSizes, localTotal, Self.getDiskStats())
-        }.value
+            if Task.isCancelled { return .cancelled }
+            return .scan(sizes: localSizes, total: localTotal, diskStats: Self.getDiskStats())
+        }
+        activeOperation = operation
+        let outcome = await operation.value
 
-        targetSizes = result.0
-        totalCacheBytes = result.1
-        diskStats = result.2
-        statusText = "Scan complete. Cache footprint: \(formatSize(result.1))"
-        isBusy = false
+        guard activeOperationID == operationID else { return }
+        activeOperation = nil
+        activeOperationID = nil
+
+        switch outcome {
+        case .cancelled:
+            isSilentlyScanning = false
+            if showProgressUI {
+                statusText = "Scan cancelled."
+                lastOperationReport = "Scan was cancelled before completion."
+            }
+        case let .scan(sizes, total, stats):
+            targetSizes = sizes
+            totalCacheBytes = total
+            diskStats = stats
+            isSilentlyScanning = false
+            if showProgressUI {
+                statusText = "Scan complete. Cache footprint: \(formatSize(total))"
+            }
+        case .cleanup, .dryRun:
+            isSilentlyScanning = false
+            statusText = "Unexpected operation state."
+        }
+        operationProgress = 0
+        operationProgressLabel = ""
+        if showProgressUI {
+            isBusy = false
+        }
     }
 
     func clearSelected() async {
+        cancelCurrentOperation()
         let selected = selectedTargets()
         guard !selected.isEmpty else {
             statusText = "Select at least one cache target."
@@ -89,23 +187,152 @@ final class CacheCleanerViewModel: ObservableObject {
 
         isBusy = true
         statusText = "Cleaning selected cache targets..."
+        operationProgress = 0
+        operationProgressLabel = "Preparing cleanup..."
+        let operationID = UUID()
+        activeOperationID = operationID
 
-        let result = await Task.detached(priority: .userInitiated) {
+        let operation = Task.detached(priority: .userInitiated) { () -> OperationOutcome in
             var totalItemsDeleted = 0
+            var totalItemsFailed = 0
+            var inaccessibleFolders = 0
+            var unsafeFolders = 0
             var totalFreed: Int64 = 0
+            var workItems: [URL] = []
+
             for target in selected {
+                if Task.isCancelled { return .cancelled }
                 let resolved = Self.resolvePaths(pattern: target.pathPattern)
-                for path in resolved {
-                    let clearResult = Self.clearFolderContents(path)
-                    totalItemsDeleted += clearResult.itemsDeleted
-                    totalFreed += clearResult.freedBytes
+                workItems.append(contentsOf: resolved)
+            }
+
+            let totalSteps = max(workItems.count, 1)
+            await MainActor.run { [weak self] in
+                guard let self, self.activeOperationID == operationID else { return }
+                self.operationProgress = 0
+                self.operationProgressLabel = "Cleaning 0/\(workItems.count) folders..."
+            }
+
+            for (index, path) in workItems.enumerated() {
+                if Task.isCancelled { return .cancelled }
+                guard Self.isPathSafeForCleanup(path) else {
+                    unsafeFolders += 1
+                    totalItemsFailed += 1
+                    continue
+                }
+                let clearResult = Self.clearFolderContents(path)
+                totalItemsDeleted += clearResult.itemsDeleted
+                totalItemsFailed += clearResult.itemsFailed
+                inaccessibleFolders += clearResult.inaccessibleFolders
+                totalFreed += clearResult.freedBytes
+
+                let step = index + 1
+                let progress = Double(step) / Double(totalSteps)
+                await MainActor.run { [weak self] in
+                    guard let self, self.activeOperationID == operationID else { return }
+                    self.operationProgress = progress
+                    self.operationProgressLabel = "Cleaning \(step)/\(workItems.count): \(Self.truncateMiddle(Self.displayPath(path), maxLength: 64))"
                 }
             }
-            return (totalItemsDeleted, totalFreed)
-        }.value
+            return .cleanup(
+                itemsDeleted: totalItemsDeleted,
+                itemsFailed: totalItemsFailed,
+                inaccessibleFolders: inaccessibleFolders,
+                unsafeFolders: unsafeFolders,
+                freedBytes: totalFreed
+            )
+        }
+        activeOperation = operation
+        let outcome = await operation.value
 
-        statusText = "Cleanup complete. Removed \(result.0) items, freed about \(formatSize(result.1))."
-        await scanSizes()
+        guard activeOperationID == operationID else { return }
+        activeOperation = nil
+        activeOperationID = nil
+
+        switch outcome {
+        case .cancelled:
+            statusText = "Cleanup cancelled."
+            lastOperationReport = "Cleanup was cancelled before completion."
+            operationProgress = 0
+            operationProgressLabel = ""
+            isBusy = false
+        case let .cleanup(itemsDeleted, itemsFailed, inaccessibleFolders, unsafeFolders, freedBytes):
+            operationProgress = 1
+            operationProgressLabel = "Cleanup finished."
+            isBusy = false
+            await scanSizes()
+            lastOperationReport = "Cleanup report: removed \(itemsDeleted) items, skipped \(itemsFailed), inaccessible folders \(inaccessibleFolders), blocked unsafe folders \(unsafeFolders), freed about \(formatSize(freedBytes))."
+            statusText = "Cleanup complete."
+            operationProgress = 0
+            operationProgressLabel = ""
+        case .scan, .dryRun:
+            statusText = "Unexpected operation state."
+            operationProgress = 0
+            operationProgressLabel = ""
+            isBusy = false
+        }
+    }
+
+    func dryRunSelected() async {
+        cancelCurrentOperation()
+        let selected = selectedTargets()
+        guard !selected.isEmpty else {
+            statusText = "Select at least one cache target."
+            return
+        }
+
+        isBusy = true
+        statusText = "Dry run in progress..."
+        let operationID = UUID()
+        activeOperationID = operationID
+
+        let operation = Task.detached(priority: .userInitiated) { () -> OperationOutcome in
+            var itemsEstimated = 0
+            var inaccessibleFolders = 0
+            var unsafeFolders = 0
+            var estimatedFreed: Int64 = 0
+            for target in selected {
+                if Task.isCancelled { return .cancelled }
+                let resolved = Self.resolvePaths(pattern: target.pathPattern)
+                for path in resolved {
+                    if Task.isCancelled { return .cancelled }
+                    guard Self.isPathSafeForCleanup(path) else {
+                        unsafeFolders += 1
+                        continue
+                    }
+                    let preview = Self.previewFolderContents(path)
+                    itemsEstimated += preview.itemsEstimated
+                    inaccessibleFolders += preview.inaccessibleFolders
+                    estimatedFreed += preview.freedBytesEstimate
+                }
+            }
+            return .dryRun(
+                itemsEstimated: itemsEstimated,
+                inaccessibleFolders: inaccessibleFolders,
+                unsafeFolders: unsafeFolders,
+                estimatedFreed: estimatedFreed
+            )
+        }
+        activeOperation = operation
+        let outcome = await operation.value
+
+        guard activeOperationID == operationID else { return }
+        activeOperation = nil
+        activeOperationID = nil
+
+        switch outcome {
+        case .cancelled:
+            statusText = "Dry run cancelled."
+            lastOperationReport = "Dry run was cancelled before completion."
+        case let .dryRun(itemsEstimated, inaccessibleFolders, unsafeFolders, estimatedFreed):
+            lastOperationReport = "Dry run report: estimated \(itemsEstimated) removable items, around \(formatSize(estimatedFreed)) reclaimable, inaccessible folders \(inaccessibleFolders), blocked unsafe folders \(unsafeFolders)."
+            statusText = "Dry run complete."
+        case .scan, .cleanup:
+            statusText = "Unexpected operation state."
+        }
+        operationProgress = 0
+        operationProgressLabel = ""
+        isBusy = false
     }
 
     nonisolated private static func getDiskStats() -> DiskStats {
@@ -139,94 +366,140 @@ final class CacheCleanerViewModel: ObservableObject {
     }
 
     nonisolated private static func availableTargets(mode: DiscoveryMode) -> [CacheTarget] {
-        let homeURL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-        let candidateRoots = [
-            homeURL,
-            homeURL.appendingPathComponent("Library", isDirectory: true)
-        ].filter { FileManager.default.fileExists(atPath: $0.path) }
-
+        let homeURL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).standardizedFileURL
+        let definitions = safeTargetDefinitions(mode: mode)
         var discovered: [CacheTarget] = []
         var seenPaths = Set<String>()
-        for root in candidateRoots {
-            traverseDirectories(root: root, home: homeURL, depth: 0, maxDepth: 5, mode: mode) { dir, reason in
-                let standardized = dir.standardizedFileURL.path
-                guard !seenPaths.contains(standardized) else { return }
+
+        for definition in definitions {
+            let resolvedPaths = resolvePaths(pattern: definition.pattern)
+            for resolved in resolvedPaths {
+                let standardized = resolved.standardizedFileURL.path
+                guard !seenPaths.contains(standardized) else { continue }
+                guard isPathSafeForCleanup(resolved) else { continue }
+                guard FileManager.default.fileExists(atPath: standardized) else { continue }
                 seenPaths.insert(standardized)
 
                 let rel = standardized.replacingOccurrences(of: homeURL.path, with: "")
                 let cleanRel = rel.hasPrefix("/") ? String(rel.dropFirst()) : rel
                 let label = cleanRel.isEmpty ? "~" : "~/\(cleanRel)"
-                let id = "auto_" + cleanRel.replacingOccurrences(of: "/", with: "_")
+                let id = "safe_" + cleanRel.replacingOccurrences(of: "/", with: "_")
                 discovered.append(CacheTarget(
                     id: id,
                     label: label,
                     pathPattern: standardized,
-                    inclusionReason: reason,
-                    enabledByDefault: true
+                    inclusionReason: definition.reason,
+                    enabledByDefault: definition.enabledByDefault
                 ))
             }
         }
+
         return discovered.sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
     }
 
-    nonisolated private static func traverseDirectories(
-        root: URL,
-        home: URL,
-        depth: Int,
-        maxDepth: Int,
-        mode: DiscoveryMode,
-        onCandidate: (URL, String) -> Void
-    ) {
-        guard depth <= maxDepth else { return }
-        guard let entries = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey]) else {
-            return
+    nonisolated private static func safeTargetDefinitions(mode: DiscoveryMode) -> [(pattern: String, reason: String, enabledByDefault: Bool)] {
+        let ultraSafe: [(String, String, Bool)] = [
+            ("~/Library/Caches", "Ultra Safe: user cache root only", true)
+        ]
+        let strict: [(String, String, Bool)] = [
+            ("~/Library/Caches", "Known Apple/user cache root", true),
+            ("~/Library/Containers/*/Data/Library/Caches", "App sandbox cache root", true),
+            ("~/Library/Group Containers/*/Library/Caches", "Group container cache root", true),
+            ("~/Library/Developer/Xcode/DerivedData", "Xcode build cache (DerivedData)", false),
+            ("~/Library/Developer/CoreSimulator/Caches", "Simulator cache root", false)
+        ]
+        let balancedOnly: [(String, String, Bool)] = [
+            ("~/Library/Logs", "User log files (safe to clear)", false),
+            ("~/Library/Containers/*/Data/Library/Logs", "Sandbox app logs", false),
+            ("~/Library/Group Containers/*/Library/Logs", "Group container logs", false),
+            ("~/Library/tmp", "User temporary files", false),
+            ("~/Library/Containers/*/Data/Library/tmp", "Sandbox temporary files", false)
+        ]
+        let developerDeepCleanOnly: [(String, String, Bool)] = [
+            ("~/.gradle/caches", "Android/Gradle dependency and build caches", false),
+            ("~/.gradle/daemon", "Gradle daemon state and logs", false),
+            ("~/.gradle/native", "Gradle native extraction cache", false),
+            ("~/.android/cache", "Android SDK/AVD cache data", false),
+            ("~/.npm/_cacache", "npm package content-addressable cache", false),
+            ("~/Library/Caches/Yarn", "Yarn classic package cache", false),
+            ("~/Library/Caches/pnpm", "pnpm package store cache", false),
+            ("~/Library/Caches/node-gyp", "node-gyp build cache", false),
+            ("~/Library/Caches/CocoaPods", "CocoaPods artifact cache", false),
+            ("~/Library/Developer/Xcode/Archives", "Xcode archive outputs (large, regeneratable)", false),
+            ("~/Library/Developer/Xcode/iOS DeviceSupport", "Xcode iOS device support files", false),
+            ("~/Library/Developer/Xcode/SourcePackages", "SwiftPM package caches for Xcode", false),
+            ("~/.cache/pip", "pip wheel/download cache", false),
+            ("~/Library/Caches/pip", "pip macOS cache location", false),
+            ("~/.cache/pypoetry", "Poetry package cache", false),
+            ("~/Library/Caches/pypoetry", "Poetry macOS cache location", false),
+            ("~/.cache/uv", "uv package cache", false),
+            ("~/Library/Caches/JetBrains", "JetBrains IDE system caches", false),
+            ("~/Library/Application Support/JetBrains/*/caches", "JetBrains project/IDE caches", false),
+            ("~/Library/Application Support/Google/AndroidStudio*/caches", "Android Studio IDE caches", false)
+        ]
+        switch mode {
+        case .ultraSafe:
+            return ultraSafe
+        case .strict:
+            return strict
+        case .balanced:
+            return strict + balancedOnly
+        case .developerDeepClean:
+            return strict + balancedOnly + developerDeepCleanOnly
         }
-
-        for entry in entries {
-            guard isDirectory(entry) else { continue }
-            if isProtectedTopLevel(entry, home: home) { continue }
-
-            if let reason = cacheReasonIfSafe(entry, home: home, mode: mode) {
-                onCandidate(entry, reason)
-            }
-            traverseDirectories(root: entry, home: home, depth: depth + 1, maxDepth: maxDepth, mode: mode, onCandidate: onCandidate)
-        }
     }
 
-    nonisolated private static func isDirectory(_ url: URL) -> Bool {
-        var isDir: ObjCBool = false
-        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
-    }
-
-    nonisolated private static func isProtectedTopLevel(_ url: URL, home: URL) -> Bool {
-        let parent = url.deletingLastPathComponent().standardizedFileURL.path
-        guard parent == home.standardizedFileURL.path else { return false }
-        let protected = Set([
-            "Applications", "Desktop", "Documents", "Downloads", "Movies",
-            "Music", "Pictures", "Public", "Sites"
-        ])
-        return protected.contains(url.lastPathComponent)
-    }
-
-    nonisolated private static func cacheReasonIfSafe(_ url: URL, home: URL, mode: DiscoveryMode) -> String? {
+    nonisolated private static func isPathSafeForCleanup(_ url: URL) -> Bool {
         let standardized = url.standardizedFileURL.path
-        let homePath = home.standardizedFileURL.path
-        guard standardized.hasPrefix(homePath), standardized != homePath else { return nil }
+        let expandedHome = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).standardizedFileURL.path
+        guard standardized.hasPrefix(expandedHome + "/") else { return false }
 
-        let lowerName = url.lastPathComponent.lowercased()
-        let strictKeywords = ["cache", "caches", "deriveddata"]
-        let balancedKeywords = strictKeywords + ["logs", "tmp", "temp"]
-        let keywords = mode == .strict ? strictKeywords : balancedKeywords
-        guard let matched = keywords.first(where: { lowerName.contains($0) }) else { return nil }
+        let strictAllowedPrefixes = [
+            "\(expandedHome)/Library/Caches",
+            "\(expandedHome)/Library/Containers",
+            "\(expandedHome)/Library/Group Containers",
+            "\(expandedHome)/Library/Developer/Xcode/DerivedData",
+            "\(expandedHome)/Library/Developer/CoreSimulator/Caches"
+        ]
+        let balancedAllowedPrefixes = strictAllowedPrefixes + [
+            "\(expandedHome)/Library/Logs",
+            "\(expandedHome)/Library/tmp"
+        ]
+        let developerDeepAllowedPrefixes = balancedAllowedPrefixes + [
+            "\(expandedHome)/.gradle/caches",
+            "\(expandedHome)/.gradle/daemon",
+            "\(expandedHome)/.gradle/native",
+            "\(expandedHome)/.android/cache",
+            "\(expandedHome)/.npm/_cacache",
+            "\(expandedHome)/.cache/pip",
+            "\(expandedHome)/.cache/pypoetry",
+            "\(expandedHome)/.cache/uv",
+            "\(expandedHome)/Library/Caches/Yarn",
+            "\(expandedHome)/Library/Caches/pnpm",
+            "\(expandedHome)/Library/Caches/node-gyp",
+            "\(expandedHome)/Library/Caches/CocoaPods",
+            "\(expandedHome)/Library/Caches/pip",
+            "\(expandedHome)/Library/Caches/pypoetry",
+            "\(expandedHome)/Library/Caches/JetBrains",
+            "\(expandedHome)/Library/Developer/Xcode/Archives",
+            "\(expandedHome)/Library/Developer/Xcode/iOS DeviceSupport",
+            "\(expandedHome)/Library/Developer/Xcode/SourcePackages",
+            "\(expandedHome)/Library/Application Support/JetBrains",
+            "\(expandedHome)/Library/Application Support/Google"
+        ]
+        let allowedPrefixes = developerDeepAllowedPrefixes
+        guard allowedPrefixes.contains(where: { standardized == $0 || standardized.hasPrefix($0 + "/") }) else {
+            return false
+        }
 
-        guard let children = try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil),
-              !children.isEmpty else {
-            return nil
-        }
-        if mode == .strict {
-            return "Matched strict cache keyword: '\(matched)'"
-        }
-        return "Matched balanced cache keyword: '\(matched)'"
+        let lowercase = standardized.lowercased()
+        let safeKeywords = [
+            "cache", "caches", "deriveddata", "logs", "tmp", "temp",
+            ".gradle", ".android", ".npm", ".cache", "sourcepackages",
+            "archives", "devicesupport", "jetbrains", "androidstudio",
+            "cocoapods", "yarn", "pnpm", "pip", "pypoetry", "uv"
+        ]
+        return safeKeywords.contains(where: { lowercase.contains($0) })
     }
 
     nonisolated private static func resolvePaths(pattern: String) -> [URL] {
@@ -286,17 +559,35 @@ final class CacheCleanerViewModel: ObservableObject {
         return sizeNum.int64Value
     }
 
-    nonisolated private static func clearFolderContents(_ folder: URL) -> (itemsDeleted: Int, freedBytes: Int64) {
+    nonisolated private static func previewFolderContents(_ folder: URL) -> (itemsEstimated: Int, inaccessibleFolders: Int, freedBytesEstimate: Int64) {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory), isDirectory.boolValue else {
-            return (0, 0)
+            return (0, 1, 0)
         }
 
         guard let children = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else {
-            return (0, 0)
+            return (0, 1, 0)
+        }
+
+        var estimatedBytes: Int64 = 0
+        for child in children {
+            estimatedBytes += sizeOfPath(child)
+        }
+        return (children.count, 0, estimatedBytes)
+    }
+
+    nonisolated private static func clearFolderContents(_ folder: URL) -> (itemsDeleted: Int, itemsFailed: Int, inaccessibleFolders: Int, freedBytes: Int64) {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return (0, 0, 1, 0)
+        }
+
+        guard let children = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else {
+            return (0, 0, 1, 0)
         }
 
         var itemsDeleted = 0
+        var itemsFailed = 0
         var freedBytes: Int64 = 0
         for child in children {
             let childSize = sizeOfPath(child)
@@ -305,10 +596,36 @@ final class CacheCleanerViewModel: ObservableObject {
                 itemsDeleted += 1
                 freedBytes += childSize
             } catch {
-                continue
+                itemsFailed += 1
             }
         }
 
-        return (itemsDeleted, freedBytes)
+        return (itemsDeleted, itemsFailed, 0, freedBytes)
+    }
+
+    nonisolated private static func displayPath(_ url: URL) -> String {
+        let standardized = url.standardizedFileURL.path
+        let home = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).standardizedFileURL.path
+        guard standardized.hasPrefix(home) else { return standardized }
+
+        let remainder = standardized.dropFirst(home.count)
+        if remainder.isEmpty {
+            return "~"
+        }
+        if remainder.first == "/" {
+            return "~\(remainder)"
+        }
+        return "~/\(remainder)"
+    }
+
+    nonisolated private static func truncateMiddle(_ text: String, maxLength: Int) -> String {
+        guard maxLength > 3, text.count > maxLength else { return text }
+
+        let headCount = (maxLength - 1) / 2
+        let tailCount = maxLength - headCount - 1
+
+        let head = String(text.prefix(headCount))
+        let tail = String(text.suffix(tailCount))
+        return "\(head)...\(tail)"
     }
 }
