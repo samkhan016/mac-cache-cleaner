@@ -3,12 +3,11 @@ import AppKit
 
 struct ContentView: View {
     @ObservedObject var viewModel: CacheCleanerViewModel
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showConfirm = false
     @State private var activePrimaryAction: PrimaryAction?
     @State private var statShimmerSweep: Bool = false
-    /// Drives `List(selection:)`; includes Home plus discovery modes.
+    /// Drives the custom sidebar; includes Home plus discovery modes.
     @State private var selectedSidebar: CacheCleanerViewModel.SidebarDestination = .home
     /// Keeps the sidebar open; paired with `hideSidebarToggleIfAvailable()`.
     @State private var splitViewColumnVisibility: NavigationSplitViewVisibility = .all
@@ -18,22 +17,59 @@ struct ContentView: View {
         viewModel.hasCompletedScan && viewModel.selectedSummary().count > 0
     }
 
+    private var appVersionText: String {
+        let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        switch (short, build) {
+        case let (s?, b?) where s != b:
+            return "v\(s) (\(b))"
+        case let (s?, _):
+            return "v\(s)"
+        case let (_, b?):
+            return "v\(b)"
+        default:
+            return "Version unavailable"
+        }
+    }
+
     var body: some View {
         NavigationSplitView(columnVisibility: $splitViewColumnVisibility) {
-            List(selection: $selectedSidebar) {
-                Label("Home", systemImage: "house.fill")
-                    .tag(CacheCleanerViewModel.SidebarDestination.home)
+            VStack(alignment: .leading, spacing: 4) {
+                sidebarRow(title: "Home", symbol: "house.fill", destination: .home)
                 ForEach(CacheCleanerViewModel.DiscoveryMode.allCases) { mode in
-                    Label(mode.sidebarLabel, systemImage: mode.sidebarSystemImage)
-                        .tag(CacheCleanerViewModel.SidebarDestination.discovery(mode))
+                    sidebarRow(
+                        title: mode.sidebarLabel,
+                        symbol: mode.sidebarSystemImage,
+                        destination: .discovery(mode)
+                    )
                 }
+                Spacer(minLength: 0)
+                Text(appVersionText)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.52))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 4)
             }
-            .listStyle(.sidebar)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(.horizontal, 8)
+            .padding(.top, 14)
+            .padding(.bottom, 12)
+            .background {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.08, green: 0.05, blue: 0.16),
+                        Color(red: 0.05, green: 0.06, blue: 0.12)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                // Fills behind title-bar safe area so the system’s rounded sidebar mask doesn’t show a separate “band” at the top.
+                .ignoresSafeArea(edges: [.top, .leading, .bottom])
+            }
             .navigationSplitViewColumnWidth(min: 200, ideal: 220)
             .navigationTitle("")
-            .padding(.top, 14)
             .hideSidebarToggleIfAvailable()
-            .disabled(viewModel.isBusy)
             .onAppear {
                 if case .discovery(let mode) = selectedSidebar {
                     viewModel.selectDiscoveryMode(mode)
@@ -55,9 +91,10 @@ struct ContentView: View {
                 Rectangle()
                     .fill(
                         LinearGradient(
-                            colors: colorScheme == .dark
-                                ? [Color.black.opacity(0.16), Color.clear]
-                                : [Color.black.opacity(0.045), Color.clear],
+                            colors: [
+                                Color(red: 0.22, green: 0.12, blue: 0.42).opacity(0.35),
+                                Color.clear
+                            ],
                             startPoint: .top,
                             endPoint: .bottom
                         )
@@ -110,8 +147,59 @@ struct ContentView: View {
         }
         .toolbarBackground(toolbarGradient, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
-        .toolbarColorScheme(colorScheme, for: .windowToolbar)
-        .preferredColorScheme(.light)
+        .toolbarColorScheme(.dark, for: .windowToolbar)
+        .preferredColorScheme(.dark)
+    }
+
+    private func sidebarRow(
+        title: String,
+        symbol: String,
+        destination: CacheCleanerViewModel.SidebarDestination
+    ) -> some View {
+        let isSelected = selectedSidebar == destination
+        return Button {
+            guard !viewModel.isBusy else { return }
+            selectedSidebar = destination
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: symbol)
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 18, alignment: .center)
+                    .symbolRenderingMode(.hierarchical)
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.72))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 0.46, green: 0.28, blue: 0.72),
+                                    Color(red: 0.30, green: 0.18, blue: 0.52)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                        )
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(viewModel.isBusy)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private var modeIntroCard: some View {
@@ -153,7 +241,7 @@ struct ContentView: View {
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(tertiaryTextColor)
                     Divider()
-                        .overlay(Color(red: 0.45, green: 0.55, blue: 0.72))
+                        .overlay(Color.white.opacity(0.18))
                     HStack(spacing: 16) {
                         resultMetric(title: "Items removed", value: "\(summary.itemsDeleted)")
                         resultMetric(title: "Skipped", value: "\(summary.itemsFailed)")
@@ -186,44 +274,42 @@ struct ContentView: View {
     private var appBackground: some View {
         ZStack {
             LinearGradient(
-                colors: colorScheme == .dark
-                    ? [
-                        Color(red: 0.06, green: 0.12, blue: 0.20),
-                        Color(red: 0.06, green: 0.10, blue: 0.18),
-                        Color(red: 0.05, green: 0.08, blue: 0.15)
-                    ]
-                    : [
-                        Color(red: 0.31, green: 0.68, blue: 0.98),
-                        Color(red: 0.52, green: 0.78, blue: 0.99),
-                        Color(red: 0.69, green: 0.85, blue: 1.00)
-                    ],
+                colors: [
+                    Color(red: 0.10, green: 0.06, blue: 0.22),
+                    Color(red: 0.06, green: 0.09, blue: 0.24),
+                    Color(red: 0.04, green: 0.07, blue: 0.18)
+                ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
 
-            if colorScheme != .dark {
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.10, green: 0.49, blue: 0.94).opacity(0.72),
-                        Color(red: 0.08, green: 0.33, blue: 0.80).opacity(0.58),
-                        .clear
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            }
+            LinearGradient(
+                colors: [
+                    Color(red: 0.35, green: 0.20, blue: 0.55).opacity(0.42),
+                    Color(red: 0.12, green: 0.28, blue: 0.62).opacity(0.28),
+                    .clear
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
 
             Circle()
-                .fill(Color.blue.opacity(colorScheme == .dark ? 0.12 : 0.12))
+                .fill(Color(red: 0.45, green: 0.28, blue: 0.85).opacity(0.22))
                 .frame(width: 420, height: 420)
                 .blur(radius: 120)
                 .offset(x: -260, y: -250)
 
             Circle()
-                .fill(Color.indigo.opacity(colorScheme == .dark ? 0.10 : 0.10))
+                .fill(Color(red: 0.20, green: 0.45, blue: 0.95).opacity(0.20))
                 .frame(width: 510, height: 510)
                 .blur(radius: 130)
                 .offset(x: 230, y: -120)
+
+            Circle()
+                .fill(Color(red: 0.55, green: 0.35, blue: 0.90).opacity(0.12))
+                .frame(width: 320, height: 320)
+                .blur(radius: 100)
+                .offset(x: 120, y: 280)
         }
         .ignoresSafeArea()
     }
@@ -250,8 +336,8 @@ struct ContentView: View {
                         .fill(
                             LinearGradient(
                                 colors: [
-                                    Color(red: 0.10, green: 0.49, blue: 0.94),
-                                    Color(red: 0.08, green: 0.33, blue: 0.80)
+                                    Color(red: 0.48, green: 0.32, blue: 0.92),
+                                    Color(red: 0.18, green: 0.42, blue: 0.95)
                                 ],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
@@ -282,29 +368,32 @@ struct ContentView: View {
                 Spacer()
                 Label(viewModel.isBusy ? "Working" : "Ready", systemImage: viewModel.isBusy ? "clock.fill" : "checkmark.circle.fill")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(viewModel.isBusy ? Color(red: 0.41, green: 0.26, blue: 0.0) : Color(red: 1.0, green: 1.0, blue: 1.0))
+                    .foregroundStyle(viewModel.isBusy ? Color(red: 0.15, green: 0.08, blue: 0.04) : Color.white.opacity(0.96))
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
                     .background(
                         Capsule()
                             .fill(viewModel.isBusy
-                                ? Color(red: 0.99, green: 0.74, blue: 0.35).opacity(0.72)
-                                : Color(red: 0.15, green: 0.73, blue: 0.37).opacity(0.92))
+                                ? Color(red: 0.98, green: 0.72, blue: 0.38).opacity(0.88)
+                                : Color(red: 0.22, green: 0.65, blue: 0.48).opacity(0.92))
                     )
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Status")
                     .accessibilityValue(viewModel.isBusy ? "Working" : "Ready")
             }
-
-            HStack {
-                Spacer(minLength: 0)
-                modePrimaryCircleButton
-                Spacer(minLength: 0)
-            }
-            .padding(.top, 4)
         }
         .padding(14)
         .sectionCard(cornerRadius: 20)
+    }
+
+    private var modePrimaryActionCard: some View {
+        HStack {
+            Spacer(minLength: 0)
+            modePrimaryCircleButton
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 14)
     }
 
     private var homeScrollContent: some View {
@@ -329,10 +418,13 @@ struct ContentView: View {
                 topHeader
                     .padding(.top, 10)
                 modeIntroCard
-                quickCleanCard
-                if viewModel.lastCleanupSummary != nil {
+                if viewModel.hasCompletedScan {
+                    quickCleanCard
+                }
+                if viewModel.lastCleanupSummary != nil, viewModel.hasCompletedScan {
                     cleanupResultsCard
                 }
+                modePrimaryActionCard
                 if viewModel.hasCompletedScan {
                     targetsSection
                 } else if !viewModel.targets.isEmpty {
@@ -444,8 +536,8 @@ struct ContentView: View {
 
     private var homeQuickScanCircleButton: some View {
         let diameter: CGFloat = 132
-        let topTint = Color(red: 0.26, green: 0.72, blue: 1.00)
-        let bottomTint = Color(red: 0.06, green: 0.54, blue: 0.97)
+        let topTint = Color(red: 0.52, green: 0.38, blue: 0.98)
+        let bottomTint = Color(red: 0.12, green: 0.45, blue: 0.96)
         return Button {
             selectedSidebar = .discovery(.ultraSafe)
             activePrimaryAction = .scan
@@ -503,8 +595,8 @@ struct ContentView: View {
     private var modePrimaryCircleButton: some View {
         let phase = modePrimaryButtonPhase
         let diameter: CGFloat = 132
-        let scanTop = Color(red: 0.26, green: 0.72, blue: 1.00)
-        let scanBottom = Color(red: 0.06, green: 0.54, blue: 0.97)
+        let scanTop = Color(red: 0.52, green: 0.38, blue: 0.98)
+        let scanBottom = Color(red: 0.12, green: 0.45, blue: 0.96)
         let cleanTop = Color(red: 1.00, green: 0.56, blue: 0.52)
         let cleanBottom = Color(red: 0.90, green: 0.32, blue: 0.31)
         let topTint = phase == .clean ? cleanTop : scanTop
@@ -590,39 +682,34 @@ struct ContentView: View {
     }
 
     private var primaryTextColor: Color {
-        Color.black.opacity(0.92)
+        Color.white.opacity(0.94)
     }
 
     private var secondaryTextColor: Color {
-        Color.black.opacity(0.72)
+        Color.white.opacity(0.72)
     }
 
     private var tertiaryTextColor: Color {
-        Color.black.opacity(0.56)
+        Color.white.opacity(0.52)
     }
 
     private var accentBlue: Color {
-        Color(red: 0.12, green: 0.56, blue: 0.98)
+        Color(red: 0.55, green: 0.48, blue: 1.0)
     }
 
     private var toolbarGradient: LinearGradient {
         LinearGradient(
-            colors: colorScheme == .dark
-                ? [
-                    Color(red: 0.08, green: 0.16, blue: 0.24),
-                    Color(red: 0.07, green: 0.12, blue: 0.20)
-                ]
-                : [
-                    Color(red: 0.35, green: 0.70, blue: 0.99),
-                    Color(red: 0.56, green: 0.80, blue: 1.00)
-                ],
+            colors: [
+                Color(red: 0.09, green: 0.06, blue: 0.18),
+                Color(red: 0.06, green: 0.08, blue: 0.20)
+            ],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )
     }
 
     private var borderColor: Color {
-        Color.black.opacity(0.16)
+        Color.white.opacity(0.14)
     }
 
     private func statChip(title: String, value: String, symbol: String, color: Color, shimmering: Bool) -> some View {
@@ -651,14 +738,14 @@ struct ContentView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 10)
         .frame(minHeight: 76, alignment: .leading)
-        .background(Color(red: 0.92, green: 0.95, blue: 0.99).opacity(0.64), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Color(red: 0.14, green: 0.12, blue: 0.28).opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(borderColor.opacity(0.78), lineWidth: 1)
+                .stroke(borderColor.opacity(0.9), lineWidth: 1)
         }
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.white.opacity(0.24), lineWidth: 0.5)
+                .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
         }
         .overlay {
             if shimmering && !reduceMotion {
@@ -668,7 +755,7 @@ struct ContentView: View {
                             LinearGradient(
                                 colors: [
                                     .white.opacity(0),
-                                    .white.opacity(0.18),
+                                    .white.opacity(0.12),
                                     .white.opacity(0)
                                 ],
                                 startPoint: .top,
@@ -715,7 +802,7 @@ struct ContentView: View {
             }
 
             Divider()
-                .overlay(Color(red: 0.45, green: 0.55, blue: 0.72))
+                .overlay(Color.white.opacity(0.16))
 
             LazyVStack(spacing: 6) {
                 ForEach(viewModel.targets) { target in
@@ -745,7 +832,7 @@ struct ContentView: View {
                     if viewModel.operationProgress > 0 {
                         ProgressView(value: viewModel.operationProgress)
                             .progressViewStyle(.linear)
-                            .tint(Color(red: 0.08, green: 0.53, blue: 0.98))
+                            .tint(Color(red: 0.50, green: 0.45, blue: 1.0))
                     } else {
                         ProgressView()
                             .scaleEffect(0.8, anchor: .leading)
@@ -847,13 +934,13 @@ private struct LiquidTargetRow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(target.label)
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color.black.opacity(0.90))
+                        .foregroundStyle(Color.white.opacity(0.92))
                     Text(target.pathPattern)
                         .font(.system(size: 9, weight: .regular, design: .monospaced))
-                        .foregroundStyle(Color.black.opacity(0.56))
+                        .foregroundStyle(Color.white.opacity(0.48))
                     Text(target.inclusionReason)
                         .font(.system(size: 9, weight: .regular))
-                        .foregroundStyle(Color.black.opacity(0.62))
+                        .foregroundStyle(Color.white.opacity(0.55))
                 }
             }
             .toggleStyle(.checkbox)
@@ -865,30 +952,30 @@ private struct LiquidTargetRow: View {
                 if isSelected {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color(red: 0.08, green: 0.56, blue: 0.99))
+                        .foregroundStyle(Color(red: 0.55, green: 0.48, blue: 1.0))
                 }
                 Text(sizeText)
                     .font(.system(size: 10, weight: .bold, design: .rounded))
-                    .foregroundStyle(Color.black.opacity(0.84))
+                    .foregroundStyle(Color.white.opacity(0.88))
             }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.white.opacity(0.62))
+                .fill(Color(red: 0.10, green: 0.08, blue: 0.20).opacity(0.85))
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .stroke(
                             isSelected
-                            ? Color(red: 0.16, green: 0.45, blue: 0.84).opacity(0.9)
-                            : Color.black.opacity(0.10),
+                            ? Color(red: 0.45, green: 0.38, blue: 0.95).opacity(0.85)
+                            : Color.white.opacity(0.08),
                             lineWidth: 1
                         )
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Color.white.opacity(isSelected ? 0.55 : 0.35), lineWidth: 0.5)
+                        .stroke(Color.white.opacity(isSelected ? 0.14 : 0.06), lineWidth: 0.5)
                 )
         )
     }
@@ -907,17 +994,17 @@ private struct SectionCardModifier: ViewModifier {
         content
             .background {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Color(red: 0.90, green: 0.93, blue: 0.97).opacity(0.72))
+                    .fill(Color(red: 0.12, green: 0.10, blue: 0.22).opacity(0.72))
             }
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(Color.black.opacity(0.16), lineWidth: 1)
+                    .stroke(Color.white.opacity(0.12), lineWidth: 1)
             }
             .shadow(
-                color: Color.black.opacity(0.12),
-                radius: 9,
+                color: Color.black.opacity(0.35),
+                radius: 12,
                 x: 0,
-                y: 5
+                y: 6
             )
     }
 }
