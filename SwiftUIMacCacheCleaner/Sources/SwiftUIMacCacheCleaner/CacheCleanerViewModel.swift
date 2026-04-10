@@ -36,19 +36,10 @@ final class CacheCleanerViewModel: ObservableObject {
         }
     }
 
-    enum TargetSortOption: String, CaseIterable, Identifiable {
-        case name = "Name"
-        case sizeDescending = "Size (Largest First)"
-        case sizeAscending = "Size (Smallest First)"
-
-        var id: String { rawValue }
-    }
-
     private struct ModeWorkspace: Equatable {
         var targets: [CacheTarget]
         var selections: [String: Bool]
         var targetSizes: [String: Int64]
-        var targetSortOption: TargetSortOption
         var totalCacheBytes: Int64
         var hasCompletedScan: Bool
         /// After a successful cleanup (until the user runs a visible scan again).
@@ -63,7 +54,6 @@ final class CacheCleanerViewModel: ObservableObject {
     @Published var selections: [String: Bool] = [:]
     @Published var targetSizes: [String: Int64] = [:]
     @Published var targetItemCounts: [String: Int] = [:]
-    @Published var targetSortOption: TargetSortOption = .name
     @Published var statusText: String = "Ready"
     @Published var lastOperationReport: String = "No cleanup run yet."
     @Published var isBusy: Bool = false
@@ -129,7 +119,6 @@ final class CacheCleanerViewModel: ObservableObject {
             targets: targets,
             selections: selections,
             targetSizes: targetSizes,
-            targetSortOption: targetSortOption,
             totalCacheBytes: totalCacheBytes,
             hasCompletedScan: hasCompletedScan,
             hasCleanedSinceLastScan: hasCleanedSinceLastScan,
@@ -144,7 +133,6 @@ final class CacheCleanerViewModel: ObservableObject {
         selections = workspace.selections
         targetSizes = workspace.targetSizes
         targetItemCounts = [:]
-        targetSortOption = workspace.targetSortOption
         totalCacheBytes = workspace.totalCacheBytes
         hasCompletedScan = workspace.hasCompletedScan
         hasCleanedSinceLastScan = workspace.hasCleanedSinceLastScan
@@ -201,12 +189,6 @@ final class CacheCleanerViewModel: ObservableObject {
             partial + (targetItemCounts[target.id] ?? 0)
         }
         return (selected.count, bytes, items)
-    }
-
-    func setTargetSortOption(_ option: TargetSortOption) {
-        guard targetSortOption != option else { return }
-        targetSortOption = option
-        sortTargetsInPlace()
     }
 
     func cancelCurrentOperation() {
@@ -928,29 +910,13 @@ final class CacheCleanerViewModel: ObservableObject {
 
     private func sortTargetsInPlace() {
         let sizes = targetSizes
-        switch targetSortOption {
-        case .name:
-            targets.sort { lhs, rhs in
-                lhs.label.localizedCaseInsensitiveCompare(rhs.label) == .orderedAscending
+        targets.sort { lhs, rhs in
+            let lhsSize = sizes[lhs.id] ?? 0
+            let rhsSize = sizes[rhs.id] ?? 0
+            if lhsSize == rhsSize {
+                return lhs.label.localizedCaseInsensitiveCompare(rhs.label) == .orderedAscending
             }
-        case .sizeDescending:
-            targets.sort { lhs, rhs in
-                let lhsSize = sizes[lhs.id] ?? 0
-                let rhsSize = sizes[rhs.id] ?? 0
-                if lhsSize == rhsSize {
-                    return lhs.label.localizedCaseInsensitiveCompare(rhs.label) == .orderedAscending
-                }
-                return lhsSize > rhsSize
-            }
-        case .sizeAscending:
-            targets.sort { lhs, rhs in
-                let lhsSize = sizes[lhs.id] ?? 0
-                let rhsSize = sizes[rhs.id] ?? 0
-                if lhsSize == rhsSize {
-                    return lhs.label.localizedCaseInsensitiveCompare(rhs.label) == .orderedAscending
-                }
-                return lhsSize < rhsSize
-            }
+            return lhsSize > rhsSize
         }
     }
 }

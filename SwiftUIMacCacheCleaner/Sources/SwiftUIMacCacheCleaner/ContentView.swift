@@ -52,14 +52,18 @@ struct ContentView: View {
             .padding(.top, 14)
             .padding(.bottom, 12)
             .background {
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.11, green: 0.08, blue: 0.19),
-                        Color(red: 0.08, green: 0.09, blue: 0.15)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
+                ZStack {
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.11, green: 0.08, blue: 0.19),
+                            Color(red: 0.08, green: 0.09, blue: 0.15)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    Rectangle()
+                        .fill(Material.ultraThinMaterial)
+                }
                 // Fills behind title-bar safe area so the system’s rounded sidebar mask doesn’t show a separate “band” at the top.
                 .ignoresSafeArea(edges: [.top, .leading, .bottom])
             }
@@ -351,29 +355,41 @@ struct ContentView: View {
                     .foregroundStyle(secondaryTextColor)
             }
             Spacer()
+            headerBrandMark
+        }
+        .padding(18)
+        .sectionCard(cornerRadius: 20)
+    }
+
+    /// Rounded-square frame with glowing accent ring (matches README mockup styling).
+    private var headerBrandMark: some View {
+        let side: CGFloat = 64
+        let corner: CGFloat = 16
+        return ZStack {
+            RoundedRectangle(cornerRadius: corner, style: .continuous)
+                .fill(Color.black.opacity(0.42))
+            RoundedRectangle(cornerRadius: corner, style: .continuous)
+                .stroke(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.62, green: 0.45, blue: 0.98),
+                            Color(red: 0.32, green: 0.52, blue: 1.0)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 2
+                )
+                .shadow(color: Color(red: 0.55, green: 0.38, blue: 0.95).opacity(0.55), radius: 10, x: 0, y: 0)
             Image(nsImage: NSApplication.shared.applicationIconImage)
                 .resizable()
                 .interpolation(.high)
                 .scaledToFill()
-                .frame(width: 58, height: 58)
-                .scaleEffect(1.34)
-                .background(
-                    Circle()
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color(red: 0.54, green: 0.38, blue: 0.94),
-                                    Color(red: 0.28, green: 0.50, blue: 0.97)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                )
-                .clipShape(Circle())
+                .frame(width: 44, height: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
-        .padding(18)
-        .sectionCard(cornerRadius: 20)
+        .frame(width: side, height: side)
+        .accessibilityHidden(true)
     }
 
     private var quickCleanCard: some View {
@@ -849,23 +865,14 @@ struct ContentView: View {
 
     private var targetsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
+            HStack(alignment: .firstTextBaseline) {
                 sectionTitle("Cleanup Targets")
                 Spacer()
-                Picker("Sort", selection: Binding(
-                    get: { viewModel.targetSortOption },
-                    set: { viewModel.setTargetSortOption($0) }
-                )) {
-                    ForEach(CacheCleanerViewModel.TargetSortOption.allCases) { option in
-                        Text(option.rawValue).tag(option)
-                    }
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("\(viewModel.targets.count) folders")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(secondaryTextColor)
                 }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .disabled(viewModel.isBusy)
-                Text("\(viewModel.targets.count) folders")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(secondaryTextColor)
             }
 
             HStack(spacing: 7) {
@@ -1053,7 +1060,14 @@ private struct StatChipView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 10)
         .frame(minHeight: 76, alignment: .leading)
-        .background(Color(red: 0.18, green: 0.16, blue: 0.32).opacity(0.48), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(red: 0.10, green: 0.08, blue: 0.20).opacity(0.55))
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Material.ultraThinMaterial)
+            }
+        }
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(borderColor.opacity(0.9), lineWidth: 1)
@@ -1210,12 +1224,16 @@ private struct SectionCardModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Color(red: 0.16, green: 0.14, blue: 0.27).opacity(0.65))
+                ZStack {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(Color(red: 0.12, green: 0.08, blue: 0.22).opacity(0.42))
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(Material.ultraThinMaterial)
+                }
             }
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                    .stroke(Color.white.opacity(0.14), lineWidth: 1)
             }
             .shadow(
                 color: Color.black.opacity(0.28),
