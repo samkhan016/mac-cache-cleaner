@@ -18,6 +18,11 @@ struct ContentView: View {
         viewModel.hasCompletedScan && viewModel.selectedSummary().count > 0
     }
 
+    /// Scan/cleanup/target edits while a scan or discovery is in progress.
+    private var blocksHeavyActions: Bool {
+        viewModel.isBusy || viewModel.isDiscoveringTargets
+    }
+
     private var appVersionText: String {
         let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
@@ -408,20 +413,23 @@ struct ContentView: View {
                         .foregroundStyle(tertiaryTextColor)
                 }
                 Spacer()
-                Label(viewModel.isBusy ? "Working" : "Ready", systemImage: viewModel.isBusy ? "clock.fill" : "checkmark.circle.fill")
+                Label(
+                    viewModel.isDiscoveringTargets ? "Discovering…" : (viewModel.isBusy ? "Working" : "Ready"),
+                    systemImage: viewModel.isDiscoveringTargets ? "ellipsis.circle" : (viewModel.isBusy ? "clock.fill" : "checkmark.circle.fill")
+                )
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(viewModel.isBusy ? Color(red: 0.15, green: 0.08, blue: 0.04) : Color.white.opacity(0.96))
+                    .foregroundStyle(blocksHeavyActions ? Color(red: 0.15, green: 0.08, blue: 0.04) : Color.white.opacity(0.96))
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
                     .background(
                         Capsule()
-                            .fill(viewModel.isBusy
+                            .fill(blocksHeavyActions
                                 ? Color(red: 0.98, green: 0.72, blue: 0.38).opacity(0.88)
                                 : Color(red: 0.22, green: 0.65, blue: 0.48).opacity(0.92))
                     )
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Status")
-                    .accessibilityValue(viewModel.isBusy ? "Working" : "Ready")
+                    .accessibilityValue(viewModel.isDiscoveringTargets ? "Discovering folders" : (viewModel.isBusy ? "Working" : "Ready"))
             }
             Text("If you are unsure, use Actions → Dry Run (⌘P) before clearing. Deselect any path you do not recognize.")
                 .font(.system(size: 11))
@@ -692,8 +700,8 @@ struct ContentView: View {
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .disabled(viewModel.isBusy)
-        .opacity(viewModel.isBusy && activePrimaryAction != .scan ? 0.45 : 1)
+        .disabled(blocksHeavyActions)
+        .opacity(blocksHeavyActions && activePrimaryAction != .scan ? 0.45 : 1)
         .keyboardShortcut("s", modifiers: [.command])
         .help("Open Ultra Safe mode and scan folders (Cmd+S)")
         .accessibilityLabel("Scan, Ultra Safe mode")
@@ -767,7 +775,7 @@ struct ContentView: View {
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .disabled(viewModel.isBusy || (phase == .clean && !canClean))
+        .disabled(blocksHeavyActions || (phase == .clean && !canClean))
         .keyboardShortcut(phase == .clean ? "k" : "s", modifiers: [.command])
         .help(modePrimaryHelp(phase: phase))
         .accessibilityLabel(title)
@@ -885,7 +893,7 @@ struct ContentView: View {
                 ) {
                     viewModel.selectAll()
                 }
-                .disabled(viewModel.isBusy)
+                .disabled(blocksHeavyActions)
 
                 actionButton(
                     "Recommended",
@@ -896,7 +904,7 @@ struct ContentView: View {
                 ) {
                     viewModel.selectRecommended()
                 }
-                .disabled(viewModel.isBusy)
+                .disabled(blocksHeavyActions)
 
                 actionButton(
                     "Deselect All",
@@ -907,7 +915,7 @@ struct ContentView: View {
                 ) {
                     viewModel.deselectAll()
                 }
-                .disabled(viewModel.isBusy)
+                .disabled(blocksHeavyActions)
 
                 Spacer()
 
@@ -932,7 +940,7 @@ struct ContentView: View {
                         ),
                         sizeText: formatSize(viewModel.targetSizes[target.id] ?? 0),
                         isSelected: isSelected,
-                        isDisabled: viewModel.isBusy
+                        isDisabled: blocksHeavyActions
                     )
                 }
             }

@@ -62,6 +62,8 @@ final class CacheCleanerViewModel: ObservableObject {
     @Published var diskStats: DiskStats = DiskStats(total: 0, used: 0, free: 0)
     @Published var totalCacheBytes: Int64 = 0
     @Published var isSilentlyScanning: Bool = false
+    /// True while `availableTargets` runs off the main thread (launch or switching to an undiscovered mode).
+    @Published var isDiscoveringTargets: Bool = false
     @Published var hasCompletedScan: Bool = false
     @Published var hasCleanedSinceLastScan: Bool = false
     @Published var lastCleanupSummary: CleanupSummary?
@@ -77,6 +79,8 @@ final class CacheCleanerViewModel: ObservableObject {
 
     private var activeOperation: Task<OperationOutcome, Never>?
     private var activeOperationID: UUID?
+    /// Bumps on each `refreshTargets` so stale completions do not apply state or clear `isDiscoveringTargets`.
+    private var discoverySequence: UInt64 = 0
 
     func refreshDiskStats() {
         diskStats = Self.getDiskStats()
@@ -84,12 +88,8 @@ final class CacheCleanerViewModel: ObservableObject {
 
     init() {
         diskStats = Self.getDiskStats()
-        refreshTargets()
-        if targets.isEmpty {
-            statusText = "No known cache folders were found on this Mac."
-        } else {
-            statusText = "Ready"
-        }
+        statusText = "Discovering cache folders…"
+        Task { await refreshTargets() }
     }
 
     func selectDiscoveryMode(_ mode: DiscoveryMode) {
@@ -100,17 +100,12 @@ final class CacheCleanerViewModel: ObservableObject {
         if let existing = workspaces[mode] {
             applyWorkspace(existing)
         } else {
-            refreshTargets()
             hasCompletedScan = false
             hasCleanedSinceLastScan = false
             lastCleanupSummary = nil
             lastOperationReport = "No cleanup run yet."
-            if targets.isEmpty {
-                statusText = "No safe cache folders found for \(discoveryMode.rawValue.lowercased()) mode."
-                totalCacheBytes = 0
-            } else {
-                statusText = "Ready"
-            }
+            statusText = "Discovering cache folders…"
+            Task { await refreshTargets() }
         }
     }
 
@@ -234,25 +229,11 @@ final class CacheCleanerViewModel: ObservableObject {
         activeOperationID = operationID
 
         let operation = Task.detached(priority: .userInitiated) { () -> OperationOutcome in
-            var localSizes: [String: Int64] = [:]
-            var localItemCounts: [String: Int] = [:]
-            var localTotal: Int64 = 0
-            for target in targetsSnapshot {
-                if Task.isCancelled { return .cancelled }
-                let resolved = Self.resolvePaths(pattern: target.pathPattern)
-                var size: Int64 = 0
-                var itemCount = 0
-                for path in resolved {
-                    if Task.isCancelled { return .cancelled }
-                    size += Self.sizeOfPath(path)
-                    itemCount += Self.previewFolderContents(path).itemsEstimated
-                }
-                localSizes[target.id] = size
-                localItemCounts[target.id] = itemCount
-                localTotal += size
+            guard let packed = await Self.scanTargetsInParallelChunks(targetsSnapshot, chunkSize: 4) else {
+                return .cancelled
             }
             if Task.isCancelled { return .cancelled }
-            return .scan(sizes: localSizes, itemCounts: localItemCounts, total: localTotal, diskStats: Self.getDiskStats())
+            return .scan(sizes: packed.sizes, itemCounts: packed.itemCounts, total: packed.total, diskStats: Self.getDiskStats())
         }
         activeOperation = operation
         let outcome = await operation.value
@@ -330,6 +311,8 @@ final class CacheCleanerViewModel: ObservableObject {
                 self.operationProgressLabel = "Cleaning 0/\(workItems.count) folders..."
             }
 
+            var lastProgressWall: CFAbsoluteTime = 0
+            let progressMinInterval: CFAbsoluteTime = 0.10
             for (index, path) in workItems.enumerated() {
                 if Task.isCancelled { return .cancelled }
                 guard Self.isPathSafeForCleanup(path, mode: modeForOperation) else {
@@ -345,10 +328,15 @@ final class CacheCleanerViewModel: ObservableObject {
 
                 let step = index + 1
                 let progress = Double(step) / Double(totalSteps)
-                await MainActor.run { [weak self] in
-                    guard let self, self.activeOperationID == operationID else { return }
-                    self.operationProgress = progress
-                    self.operationProgressLabel = "Cleaning \(step)/\(workItems.count): \(Self.truncateMiddle(Self.displayPath(path), maxLength: 64))"
+                let now = CFAbsoluteTimeGetCurrent()
+                let isLast = step == workItems.count
+                if isLast || now - lastProgressWall >= progressMinInterval || step % 5 == 0 {
+                    lastProgressWall = now
+                    await MainActor.run { [weak self] in
+                        guard let self, self.activeOperationID == operationID else { return }
+                        self.operationProgress = progress
+                        self.operationProgressLabel = "Cleaning \(step)/\(workItems.count): \(Self.truncateMiddle(Self.displayPath(path), maxLength: 64))"
+                    }
                 }
             }
             return .cleanup(
@@ -430,10 +418,10 @@ final class CacheCleanerViewModel: ObservableObject {
                         unsafeFolders += 1
                         continue
                     }
-                    let preview = Self.previewFolderContents(path)
-                    itemsEstimated += preview.itemsEstimated
-                    inaccessibleFolders += preview.inaccessibleFolders
-                    estimatedFreed += preview.freedBytesEstimate
+                    let m = Self.pathScanMetrics(path)
+                    itemsEstimated += m.immediateEntryCount
+                    inaccessibleFolders += m.inaccessibleFolders
+                    estimatedFreed += m.previewFreedEstimate
                 }
             }
             return .dryRun(
@@ -480,9 +468,20 @@ final class CacheCleanerViewModel: ObservableObject {
         return DiskStats(total: totalBytes, used: totalBytes - freeBytes, free: freeBytes)
     }
 
-    private func refreshTargets() {
-        let discovered = Self.availableTargets(mode: discoveryMode)
+    private func refreshTargets() async {
+        discoverySequence += 1
+        let seq = discoverySequence
+        isDiscoveringTargets = true
+        let mode = discoveryMode
         let oldSelections = selections
+        let discovered = await Task.detached(priority: .utility) {
+            Self.availableTargets(mode: mode)
+        }.value
+        guard seq == discoverySequence else { return }
+        guard discoveryMode == mode else {
+            isDiscoveringTargets = false
+            return
+        }
         targets = discovered
         selections = [:]
         targetSizes = [:]
@@ -496,8 +495,11 @@ final class CacheCleanerViewModel: ObservableObject {
         if discovered.isEmpty {
             statusText = "No safe cache folders found for \(discoveryMode.rawValue.lowercased()) mode."
             totalCacheBytes = 0
+        } else {
+            statusText = "Ready"
         }
         sortTargetsInPlace()
+        isDiscoveringTargets = false
     }
 
     nonisolated static func availableTargets(mode: DiscoveryMode) -> [CacheTarget] {
@@ -838,21 +840,76 @@ final class CacheCleanerViewModel: ObservableObject {
         return sizeNum.int64Value
     }
 
-    nonisolated private static func previewFolderContents(_ folder: URL) -> (itemsEstimated: Int, inaccessibleFolders: Int, freedBytesEstimate: Int64) {
+    /// One recursive size pass plus a single directory listing for immediate entry counts (scan column / dry run), avoiding per-child `sizeOfPath` walks.
+    nonisolated private static func pathScanMetrics(_ url: URL) -> (
+        totalSize: Int64,
+        immediateEntryCount: Int,
+        inaccessibleFolders: Int,
+        previewFreedEstimate: Int64
+    ) {
         var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory), isDirectory.boolValue else {
-            return (0, 1, 0)
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            return (0, 0, 1, 0)
         }
+        if !isDirectory.boolValue {
+            let sz = fileSize(url)
+            return (sz, 0, 1, 0)
+        }
+        guard let children = try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil) else {
+            let sz = sizeOfPath(url)
+            return (sz, 0, 1, 0)
+        }
+        let total = sizeOfPath(url)
+        return (total, children.count, 0, total)
+    }
 
-        guard let children = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else {
-            return (0, 1, 0)
+    nonisolated private static func scanTargetsInParallelChunks(
+        _ targets: [CacheTarget],
+        chunkSize: Int
+    ) async -> (sizes: [String: Int64], itemCounts: [String: Int], total: Int64)? {
+        var localSizes: [String: Int64] = [:]
+        var localItemCounts: [String: Int] = [:]
+        var localTotal: Int64 = 0
+        let size = max(1, chunkSize)
+        var start = 0
+        while start < targets.count {
+            if Task.isCancelled { return nil }
+            let end = min(start + size, targets.count)
+            let chunk = Array(targets[start..<end])
+            var chunkCancelled = false
+            await withTaskGroup(of: (String, Int64, Int, Bool).self) { group in
+                for target in chunk {
+                    group.addTask {
+                        let resolved = Self.resolvePaths(pattern: target.pathPattern)
+                        var s: Int64 = 0
+                        var items = 0
+                        for path in resolved {
+                            if Task.isCancelled {
+                                return (target.id, 0, 0, true)
+                            }
+                            let m = Self.pathScanMetrics(path)
+                            s += m.totalSize
+                            items += m.immediateEntryCount
+                        }
+                        return (target.id, s, items, false)
+                    }
+                }
+                for await result in group {
+                    if result.3 {
+                        chunkCancelled = true
+                        group.cancelAll()
+                        continue
+                    }
+                    guard !chunkCancelled else { continue }
+                    localSizes[result.0] = result.1
+                    localItemCounts[result.0] = result.2
+                    localTotal += result.1
+                }
+            }
+            if chunkCancelled || Task.isCancelled { return nil }
+            start = end
         }
-
-        var estimatedBytes: Int64 = 0
-        for child in children {
-            estimatedBytes += sizeOfPath(child)
-        }
-        return (children.count, 0, estimatedBytes)
+        return (localSizes, localItemCounts, localTotal)
     }
 
     nonisolated private static func clearFolderContents(_ folder: URL) -> (itemsDeleted: Int, itemsFailed: Int, inaccessibleFolders: Int, freedBytes: Int64) {
