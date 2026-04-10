@@ -8,10 +8,6 @@ macOS cache-cleaning utility built as a native SwiftUI desktop app.
   <img src="docs/images/screenshot-home.png" alt="Mac Cache Cleaner — Home with storage overview and Scan" width="820" />
 </p>
 
-<p align="center">
-  <img src="docs/images/screenshot-discovery.png" alt="Mac Cache Cleaner — discovery mode (example: Balanced) with cleanup summary and targets" width="820" />
-</p>
-
 ## What it cleans
 
 The app dynamically discovers safe cache-like folders under approved user-space roots and only shows paths that currently exist.
