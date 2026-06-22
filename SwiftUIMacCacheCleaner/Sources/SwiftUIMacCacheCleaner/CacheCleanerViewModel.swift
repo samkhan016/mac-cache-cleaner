@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 @MainActor
@@ -14,6 +15,7 @@ final class CacheCleanerViewModel: ObservableObject {
         case strict = "Strict"
         case balanced = "Balanced"
         case developerDeepClean = "Developer Deep Clean"
+        case uninstalledApps = "Uninstalled Apps"
 
         var id: String { rawValue }
 
@@ -23,6 +25,7 @@ final class CacheCleanerViewModel: ObservableObject {
             case .strict: return "Strict"
             case .balanced: return "Balanced"
             case .developerDeepClean: return "Dev Deep"
+            case .uninstalledApps: return "Leftover Apps"
             }
         }
 
@@ -32,6 +35,7 @@ final class CacheCleanerViewModel: ObservableObject {
             case .strict: return "lock.shield"
             case .balanced: return "circle.grid.2x2"
             case .developerDeepClean: return "hammer"
+            case .uninstalledApps: return "xmark.app"
             }
         }
     }
@@ -67,7 +71,6 @@ final class CacheCleanerViewModel: ObservableObject {
     @Published var hasCompletedScan: Bool = false
     @Published var hasCleanedSinceLastScan: Bool = false
     @Published var lastCleanupSummary: CleanupSummary?
-
     private var workspaces: [DiscoveryMode: ModeWorkspace] = [:]
 
     private enum OperationOutcome {
@@ -147,6 +150,8 @@ final class CacheCleanerViewModel: ObservableObject {
             return "Balanced includes Strict plus common logs and temporary folders for broader cleanup."
         case .developerDeepClean:
             return "Developer Deep Clean includes Balanced plus optional developer tool caches (for example Xcode, Android/Gradle, JetBrains, Node, and Python)."
+        case .uninstalledApps:
+            return "Finds leftover Application Support folders and third-party sandbox/cache data for apps that no longer exist on this Mac. Apple system components are excluded."
         }
     }
 
@@ -296,12 +301,14 @@ final class CacheCleanerViewModel: ObservableObject {
             var inaccessibleFolders = 0
             var unsafeFolders = 0
             var totalFreed: Int64 = 0
-            var workItems: [URL] = []
+            var workItems: [(url: URL, deleteBehavior: DeleteBehavior)] = []
 
             for target in selected {
                 if Task.isCancelled { return .cancelled }
                 let resolved = Self.resolvePaths(pattern: target.pathPattern)
-                workItems.append(contentsOf: resolved)
+                for path in resolved {
+                    workItems.append((path, target.deleteBehavior))
+                }
             }
 
             let totalSteps = max(workItems.count, 1)
@@ -313,14 +320,21 @@ final class CacheCleanerViewModel: ObservableObject {
 
             var lastProgressWall: CFAbsoluteTime = 0
             let progressMinInterval: CFAbsoluteTime = 0.10
-            for (index, path) in workItems.enumerated() {
+            for (index, item) in workItems.enumerated() {
                 if Task.isCancelled { return .cancelled }
+                let path = item.url
                 guard Self.isPathSafeForCleanup(path, mode: modeForOperation) else {
                     unsafeFolders += 1
                     totalItemsFailed += 1
                     continue
                 }
-                let clearResult = Self.clearFolderContents(path)
+                let clearResult: (itemsDeleted: Int, itemsFailed: Int, inaccessibleFolders: Int, freedBytes: Int64)
+                switch item.deleteBehavior {
+                case .clearContents:
+                    clearResult = Self.clearFolderContents(path)
+                case .removeEntireFolder:
+                    clearResult = Self.removeEntireFolder(path)
+                }
                 totalItemsDeleted += clearResult.itemsDeleted
                 totalItemsFailed += clearResult.itemsFailed
                 inaccessibleFolders += clearResult.inaccessibleFolders
@@ -418,10 +432,21 @@ final class CacheCleanerViewModel: ObservableObject {
                         unsafeFolders += 1
                         continue
                     }
-                    let m = Self.pathScanMetrics(path)
-                    itemsEstimated += m.immediateEntryCount
-                    inaccessibleFolders += m.inaccessibleFolders
-                    estimatedFreed += m.previewFreedEstimate
+                    switch target.deleteBehavior {
+                    case .clearContents:
+                        let m = Self.pathScanMetrics(path)
+                        itemsEstimated += m.immediateEntryCount
+                        inaccessibleFolders += m.inaccessibleFolders
+                        estimatedFreed += m.previewFreedEstimate
+                    case .removeEntireFolder:
+                        let m = Self.pathScanMetrics(path)
+                        if m.inaccessibleFolders > 0 {
+                            inaccessibleFolders += 1
+                        } else {
+                            itemsEstimated += 1
+                            estimatedFreed += m.totalSize
+                        }
+                    }
                 }
             }
             return .dryRun(
@@ -475,7 +500,7 @@ final class CacheCleanerViewModel: ObservableObject {
         let mode = discoveryMode
         let oldSelections = selections
         let discovered = await Task.detached(priority: .utility) {
-            Self.availableTargets(mode: mode)
+            Self.discoverTargets(mode: mode)
         }.value
         guard seq == discoverySequence else { return }
         guard discoveryMode == mode else {
@@ -493,22 +518,33 @@ final class CacheCleanerViewModel: ObservableObject {
             targetItemCounts[target.id] = 0
         }
         if discovered.isEmpty {
-            statusText = "No safe cache folders found for \(discoveryMode.rawValue.lowercased()) mode."
+            statusText = mode == .uninstalledApps
+                ? "No leftover app folders found."
+                : "No safe cache folders found for \(discoveryMode.rawValue.lowercased()) mode."
             totalCacheBytes = 0
         } else {
-            statusText = "Ready"
+            statusText = mode == .uninstalledApps
+                ? "Found \(discovered.count) leftover folders."
+                : "Ready"
         }
         sortTargetsInPlace()
         isDiscoveringTargets = false
     }
 
-    nonisolated static func availableTargets(mode: DiscoveryMode) -> [CacheTarget] {
+    nonisolated static func discoverTargets(mode: DiscoveryMode) -> [CacheTarget] {
         let homeURL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).standardizedFileURL
         return availableTargets(mode: mode, homeURL: homeURL)
     }
 
+    nonisolated static func availableTargets(mode: DiscoveryMode) -> [CacheTarget] {
+        discoverTargets(mode: mode)
+    }
+
     nonisolated static func availableTargets(mode: DiscoveryMode, homeURL: URL) -> [CacheTarget] {
         let standardizedHome = homeURL.standardizedFileURL
+        if mode == .uninstalledApps {
+            return availableUninstalledAppTargets(homeURL: standardizedHome)
+        }
         let definitions = safeTargetDefinitions(mode: mode)
         var discovered: [CacheTarget] = []
         var seenPaths = Set<String>()
@@ -601,6 +637,8 @@ final class CacheCleanerViewModel: ObservableObject {
             return strict + balancedOnly
         case .developerDeepClean:
             return strict + balancedOnly + developerDeepCleanOnly
+        case .uninstalledApps:
+            return []
         }
     }
 
@@ -658,6 +696,8 @@ final class CacheCleanerViewModel: ObservableObject {
             allowedPrefixes = balancedAllowedPrefixes
         case .developerDeepClean:
             allowedPrefixes = developerDeepAllowedPrefixes
+        case .uninstalledApps:
+            return isPathSafeForOrphanRemoval(url, homeURL: homeURL)
         }
         guard allowedPrefixes.contains(where: { standardized == $0 || standardized.hasPrefix($0 + "/") }) else {
             return false
@@ -937,6 +977,564 @@ final class CacheCleanerViewModel: ObservableObject {
         }
 
         return (itemsDeleted, itemsFailed, 0, freedBytes)
+    }
+
+    nonisolated private static func removeEntireFolder(_ folder: URL) -> (itemsDeleted: Int, itemsFailed: Int, inaccessibleFolders: Int, freedBytes: Int64) {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return (0, 0, 1, 0)
+        }
+        let freedBytes = sizeOfPath(folder)
+        do {
+            try FileManager.default.removeItem(at: folder)
+            return (1, 0, 0, freedBytes)
+        } catch {
+            return (0, 1, 0, 0)
+        }
+    }
+
+    struct InstalledAppRecord {
+        let bundleID: String
+        let normalizedNames: Set<String>
+    }
+
+    struct InstalledAppIndex {
+        let bundleIDs: Set<String>
+        let records: [InstalledAppRecord]
+    }
+
+    nonisolated static func availableUninstalledAppTargets(
+        homeURL: URL,
+        isBundleInstalled: ((String) -> Bool)? = nil,
+        isAppSupportFolderLinked: ((String) -> Bool)? = nil
+    ) -> [CacheTarget] {
+        let standardizedHome = homeURL.standardizedFileURL
+
+        let appIndex: InstalledAppIndex
+        if isBundleInstalled == nil {
+            let filesystemBundleIDs = collectInstalledBundleIdentifiersFromFilesystem()
+            let spotlightBundleIDs = collectInstalledBundleIdentifiersFromSpotlight()
+            appIndex = collectInstalledAppIndex(
+                filesystemBundleIDs: filesystemBundleIDs,
+                spotlightBundleIDs: spotlightBundleIDs
+            )
+        } else {
+            appIndex = InstalledAppIndex(bundleIDs: [], records: [])
+        }
+
+        let bundleInstalledCheck = isBundleInstalled ?? { bundleID in
+            isBundleIDLinkedToInstalledApp(bundleID, installedAppIndex: appIndex)
+        }
+        let appSupportLinkedCheck = isAppSupportFolderLinked ?? { folderName in
+            isApplicationSupportFolderLinkedToInstalledApp(folderName, index: appIndex)
+        }
+
+        var discovered: [CacheTarget] = []
+        var seenPaths = Set<String>()
+
+        let bundleIDRoots: [(URL, String)] = [
+            (
+                standardizedHome.appendingPathComponent("Library/Containers", isDirectory: true),
+                "Sandbox container for an app that no longer exists on this Mac"
+            ),
+            (
+                standardizedHome.appendingPathComponent("Library/Caches", isDirectory: true),
+                "Cache folder for an app that no longer exists on this Mac"
+            )
+        ]
+
+        for (root, reason) in bundleIDRoots {
+            appendBundleIDOrphanTargets(
+                from: root,
+                reason: reason,
+                homeURL: standardizedHome,
+                isInstalled: bundleInstalledCheck,
+                into: &discovered,
+                seenPaths: &seenPaths
+            )
+        }
+
+        appendApplicationSupportOrphanTargets(
+            homeURL: standardizedHome,
+            isLinkedToInstalledApp: appSupportLinkedCheck,
+            into: &discovered,
+            seenPaths: &seenPaths
+        )
+
+        return discovered.sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
+    }
+
+    nonisolated private static func appendBundleIDOrphanTargets(
+        from root: URL,
+        reason: String,
+        homeURL: URL,
+        isInstalled: (String) -> Bool,
+        into discovered: inout [CacheTarget],
+        seenPaths: inout Set<String>
+    ) {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return
+        }
+        for entry in entries {
+            guard isDirectory(entry) else { continue }
+            let bundleID = entry.lastPathComponent
+            guard looksLikeBundleIdentifier(bundleID) else { continue }
+            if isExcludedFromLeftoverBundleIDDiscovery(bundleID) { continue }
+            if isInstalled(bundleID) { continue }
+            appendOrphanTarget(
+                entry: entry,
+                homeURL: homeURL,
+                reason: "\(reason) (\(bundleID))",
+                into: &discovered,
+                seenPaths: &seenPaths
+            )
+        }
+    }
+
+    nonisolated private static func appendApplicationSupportOrphanTargets(
+        homeURL: URL,
+        isLinkedToInstalledApp: (String) -> Bool,
+        into discovered: inout [CacheTarget],
+        seenPaths: inout Set<String>
+    ) {
+        let appSupportRoot = homeURL.appendingPathComponent("Library/Application Support", isDirectory: true)
+        guard let topLevelEntries = try? FileManager.default.contentsOfDirectory(
+            at: appSupportRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return
+        }
+
+        for topLevel in topLevelEntries {
+            guard isDirectory(topLevel) else { continue }
+            let topName = topLevel.lastPathComponent
+            if isProtectedApplicationSupportName(topName) { continue }
+
+            let subEntries = (try? FileManager.default.contentsOfDirectory(
+                at: topLevel,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ))?.filter { isDirectory($0) } ?? []
+
+            if subEntries.isEmpty {
+                if isLinkedToInstalledApp(topName) { continue }
+                appendOrphanTarget(
+                    entry: topLevel,
+                    homeURL: homeURL,
+                    reason: "Application Support data for software that no longer exists on this Mac (\(topName))",
+                    into: &discovered,
+                    seenPaths: &seenPaths
+                )
+                continue
+            }
+
+            if shouldScanApplicationSupportSubfolders(parentName: topName, subfolderCount: subEntries.count) {
+                if !applicationSupportVendorFolderNames.contains(topName),
+                   !isLinkedToInstalledApp(topName) {
+                    appendOrphanTarget(
+                        entry: topLevel,
+                        homeURL: homeURL,
+                        reason: "Application Support data for software that no longer exists on this Mac (\(topName))",
+                        into: &discovered,
+                        seenPaths: &seenPaths
+                    )
+                    continue
+                }
+
+                for subEntry in subEntries {
+                    let subName = subEntry.lastPathComponent
+                    if isProtectedApplicationSupportName(subName) { continue }
+                    let matchName = "\(topName)/\(subName)"
+                    if !isGenericApplicationSupportSubfolderName(subName),
+                       isLinkedToInstalledApp(subName) {
+                        continue
+                    }
+                    if isLinkedToInstalledApp(matchName) { continue }
+                    appendOrphanTarget(
+                        entry: subEntry,
+                        homeURL: homeURL,
+                        reason: "Application Support data for software that no longer exists on this Mac (\(matchName))",
+                        into: &discovered,
+                        seenPaths: &seenPaths
+                    )
+                }
+            } else {
+                if isLinkedToInstalledApp(topName) { continue }
+                appendOrphanTarget(
+                    entry: topLevel,
+                    homeURL: homeURL,
+                    reason: "Application Support data for software that no longer exists on this Mac (\(topName))",
+                    into: &discovered,
+                    seenPaths: &seenPaths
+                )
+            }
+        }
+    }
+
+    nonisolated private static func appendOrphanTarget(
+        entry: URL,
+        homeURL: URL,
+        reason: String,
+        into discovered: inout [CacheTarget],
+        seenPaths: inout Set<String>
+    ) {
+        let standardized = entry.standardizedFileURL.path
+        if seenPaths.contains(standardized) { return }
+        if !isPathSafeForOrphanRemoval(entry, homeURL: homeURL) { return }
+        seenPaths.insert(standardized)
+
+        let rel = standardized.replacingOccurrences(of: homeURL.path, with: "")
+        let cleanRel = rel.hasPrefix("/") ? String(rel.dropFirst()) : rel
+        let label = cleanRel.isEmpty ? "~" : "~/\(cleanRel)"
+        let id = "orphan_" + cleanRel.replacingOccurrences(of: "/", with: "_")
+        discovered.append(CacheTarget(
+            id: id,
+            label: label,
+            pathPattern: standardized,
+            inclusionReason: reason,
+            enabledByDefault: false,
+            deleteBehavior: .removeEntireFolder
+        ))
+    }
+
+    nonisolated static func shouldScanApplicationSupportSubfolders(parentName: String, subfolderCount: Int) -> Bool {
+        if applicationSupportVendorFolderNames.contains(parentName) {
+            return true
+        }
+        return subfolderCount > 1
+    }
+
+    nonisolated static func isProtectedApplicationSupportName(_ name: String) -> Bool {
+        if name.hasPrefix("com.apple.") {
+            return true
+        }
+        return protectedApplicationSupportFolderNames.contains(name)
+    }
+
+    nonisolated static let protectedApplicationSupportFolderNames: Set<String> = [
+        "AddressBook", "Apple", "ApplePushService", "CallHistoryDB", "CallHistoryTransactions",
+        "CloudDocs", "CoreData", "CrashReporter", "Dock", "DifferentialPrivacy", "FaceTime",
+        "FileProvider", "GameKit", "Knowledge", "MobileSync", "Network", "SyncServices",
+        "Translocation", "iCloud", "iCloudDrive", "homeenergyd", "identityservicesd",
+        "Animoji", "SESStorage", "stickersd", "locationaccessstored", "icdd", "contactsd"
+    ]
+
+    nonisolated static let applicationSupportVendorFolderNames: Set<String> = [
+        "Google", "JetBrains", "Adobe", "Microsoft", "Mozilla", "Valve Corporation",
+        "Epic", "Blizzard", "Electronic Arts", "Steam", "Spotify", "Unity"
+    ]
+
+    /// Legacy Application Support paths that belong to a newer/replacement app still installed.
+    nonisolated static let applicationSupportLegacyFolderAliases: [String: String] = [
+        "MSTeams": "com.microsoft.teams2",
+        "Microsoft/MSTeams": "com.microsoft.teams2"
+    ]
+
+    /// Electron/Chromium-style subfolder names too generic to match installed apps on their own.
+    nonisolated static func isGenericApplicationSupportSubfolderName(_ name: String) -> Bool {
+        genericApplicationSupportSubfolderNames.contains(normalizeAppMatchToken(name))
+    }
+
+    nonisolated static let genericApplicationSupportSubfolderNames: Set<String> = [
+        "cache", "codecache", "config", "data", "log", "logs", "user", "monitor",
+        "storage", "temp", "backup", "backups", "update", "updater", "crashpad",
+        "default", "downloads", "shareddictionary", "sessionsummary", "playbacksessions",
+        "indexeddb", "gpucache", "blobstorage", "localstorage", "webstorage",
+        "videodecodestats", "dawncache", "dawnwebgpucache", "dawngraphitecache"
+    ]
+
+    nonisolated static func isApplicationSupportFolderLinkedToInstalledApp(
+        _ folderName: String,
+        index: InstalledAppIndex
+    ) -> Bool {
+        if let legacyBundleID = applicationSupportLegacyFolderAliases[folderName],
+           isBundleIDLinkedToInstalledApp(legacyBundleID, installedAppIndex: index) {
+            return true
+        }
+        if looksLikeBundleIdentifier(folderName), index.bundleIDs.contains(folderName) {
+            return true
+        }
+        let normalizedFolder = normalizeAppMatchToken(folderName)
+        guard !normalizedFolder.isEmpty else { return false }
+        for record in index.records {
+            if record.normalizedNames.contains(normalizedFolder) {
+                return true
+            }
+            for name in record.normalizedNames where name.count >= 4 {
+                if normalizedFolder.contains(name) || name.contains(normalizedFolder) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    nonisolated static func normalizeAppMatchToken(_ text: String) -> String {
+        text.lowercased().filter { $0.isLetter || $0.isNumber }
+    }
+
+    nonisolated static func collectInstalledAppIndex(
+        filesystemBundleIDs: Set<String>,
+        spotlightBundleIDs: Set<String>
+    ) -> InstalledAppIndex {
+        var recordsByBundleID: [String: InstalledAppRecord] = [:]
+        let appPaths = collectInstalledApplicationBundlePaths(
+            filesystemBundleIDs: filesystemBundleIDs,
+            spotlightBundleIDs: spotlightBundleIDs
+        )
+        for appPath in appPaths {
+            guard let bundleID = bundleIdentifier(forAppBundle: appPath) else { continue }
+            var normalizedNames = Set<String>()
+            normalizedNames.insert(normalizeAppMatchToken(appPath.deletingPathExtension().lastPathComponent))
+            if let data = FileManager.default.contents(atPath: appPath.appendingPathComponent("Contents/Info.plist").path),
+               let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] {
+                for key in ["CFBundleName", "CFBundleDisplayName"] {
+                    if let value = plist[key] as? String {
+                        normalizedNames.insert(normalizeAppMatchToken(value))
+                    }
+                }
+            }
+            recordsByBundleID[bundleID] = InstalledAppRecord(bundleID: bundleID, normalizedNames: normalizedNames)
+        }
+        return InstalledAppIndex(
+            bundleIDs: Set(recordsByBundleID.keys),
+            records: Array(recordsByBundleID.values)
+        )
+    }
+
+    nonisolated static func collectInstalledApplicationBundlePaths(
+        filesystemBundleIDs: Set<String>,
+        spotlightBundleIDs: Set<String>
+    ) -> Set<URL> {
+        var appPaths = Set<URL>()
+        let home = NSHomeDirectory()
+        let appRoots = [
+            "/Applications",
+            "/System/Applications",
+            "/System/Library/CoreServices",
+            "\(home)/Applications",
+            "/opt/homebrew/Caskroom",
+            "/usr/local/Caskroom"
+        ]
+        for root in appRoots {
+            let rootURL = URL(fileURLWithPath: root, isDirectory: true)
+            guard let enumerator = FileManager.default.enumerator(
+                at: rootURL,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ) else {
+                continue
+            }
+            for case let url as URL in enumerator {
+                guard url.pathExtension == "app" else { continue }
+                appPaths.insert(url.standardizedFileURL)
+                enumerator.skipDescendants()
+            }
+        }
+        for path in runMdfind(query: "kMDItemContentType == 'com.apple.application-bundle'") {
+            let url = URL(fileURLWithPath: path).standardizedFileURL
+            guard url.pathExtension == "app", FileManager.default.fileExists(atPath: url.path) else { continue }
+            appPaths.insert(url)
+        }
+        _ = filesystemBundleIDs
+        _ = spotlightBundleIDs
+        return appPaths
+    }
+
+    /// Apple bundle IDs are macOS components/extensions, not third-party uninstall leftovers.
+    nonisolated static func isExcludedAppleSystemBundleID(_ bundleID: String) -> Bool {
+        bundleID.hasPrefix("com.apple.") || bundleID.hasPrefix("com.apple.dt.")
+    }
+
+    /// Bundle IDs that are system/developer tooling rather than third-party app leftovers.
+    nonisolated static func isExcludedFromLeftoverBundleIDDiscovery(_ bundleID: String) -> Bool {
+        isExcludedAppleSystemBundleID(bundleID) || bundleID.hasPrefix("org.swift.")
+    }
+
+    /// True when the bundle ID belongs to an installed app or one of its extensions/helpers.
+    nonisolated static func isBundleIDLinkedToInstalledApp(
+        _ bundleID: String,
+        installedAppIndex: InstalledAppIndex
+    ) -> Bool {
+        if isExcludedFromLeftoverBundleIDDiscovery(bundleID) {
+            return true
+        }
+        if installedAppIndex.bundleIDs.contains(bundleID) {
+            return true
+        }
+        for installedID in installedAppIndex.bundleIDs {
+            if bundleID.hasPrefix(installedID + ".") || installedID.hasPrefix(bundleID + ".") {
+                return true
+            }
+        }
+        return isLaunchServicesAppOnDisk(bundleID: bundleID)
+    }
+
+    nonisolated static func isLaunchServicesAppOnDisk(bundleID: String) -> Bool {
+        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
+            return false
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: appURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return false
+        }
+        return appURL.pathExtension == "app" || appURL.path.hasSuffix(".app")
+    }
+
+    /// Returns true when a `.app` bundle with this identifier exists on disk.
+    nonisolated static func isBundleInstalledOnSystem(_ bundleID: String) -> Bool {
+        let filesystemBundleIDs = collectInstalledBundleIdentifiersFromFilesystem()
+        let spotlightBundleIDs = collectInstalledBundleIdentifiersFromSpotlight()
+        let index = collectInstalledAppIndex(
+            filesystemBundleIDs: filesystemBundleIDs,
+            spotlightBundleIDs: spotlightBundleIDs
+        )
+        return isBundleIDLinkedToInstalledApp(bundleID, installedAppIndex: index)
+    }
+
+    nonisolated static func isBundleInstalledOnSystem(
+        _ bundleID: String,
+        installedAppIndex: InstalledAppIndex
+    ) -> Bool {
+        isBundleIDLinkedToInstalledApp(bundleID, installedAppIndex: installedAppIndex)
+    }
+
+    nonisolated static func collectInstalledBundleIdentifiers() -> Set<String> {
+        var bundleIDs = collectInstalledBundleIdentifiersFromFilesystem()
+        bundleIDs.formUnion(collectInstalledBundleIdentifiersFromSpotlight())
+        return bundleIDs
+    }
+
+    nonisolated static func collectInstalledBundleIdentifiersFromFilesystem() -> Set<String> {
+        let home = NSHomeDirectory()
+        let appRoots = [
+            "/Applications",
+            "/System/Applications",
+            "/System/Library/CoreServices",
+            "\(home)/Applications",
+            "/opt/homebrew/Caskroom",
+            "/usr/local/Caskroom"
+        ]
+        var bundleIDs = Set<String>()
+        for root in appRoots {
+            bundleIDs.formUnion(bundleIDsInApplicationsDirectory(root))
+        }
+        return bundleIDs
+    }
+
+    nonisolated static func collectInstalledBundleIdentifiersFromSpotlight() -> Set<String> {
+        var bundleIDs = Set<String>()
+        for path in runMdfind(query: "kMDItemContentType == 'com.apple.application-bundle'") {
+            let url = URL(fileURLWithPath: path)
+            guard url.pathExtension == "app" else { continue }
+            if let bundleID = bundleIdentifier(forAppBundle: url) {
+                bundleIDs.insert(bundleID)
+            }
+        }
+        return bundleIDs
+    }
+
+    nonisolated static func runMdfind(query: String) -> [String] {
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
+        process.arguments = [query]
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return [] }
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return [] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8) else { return [] }
+        return output
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init)
+    }
+
+    nonisolated static func bundleIDsInApplicationsDirectory(_ path: String) -> Set<String> {
+        let rootURL = URL(fileURLWithPath: path, isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: rootURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return []
+        }
+        guard let enumerator = FileManager.default.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        var bundleIDs = Set<String>()
+        for case let url as URL in enumerator {
+            guard url.pathExtension == "app" else { continue }
+            if let bundleID = bundleIdentifier(forAppBundle: url) {
+                bundleIDs.insert(bundleID)
+            }
+            enumerator.skipDescendants()
+        }
+        return bundleIDs
+    }
+
+    nonisolated static func bundleIdentifier(forAppBundle url: URL) -> String? {
+        let plistURL = url.appendingPathComponent("Contents/Info.plist")
+        guard let data = FileManager.default.contents(atPath: plistURL.path),
+              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+              let bundleID = plist["CFBundleIdentifier"] as? String else {
+            return nil
+        }
+        return bundleID
+    }
+
+    nonisolated static func looksLikeBundleIdentifier(_ text: String) -> Bool {
+        let pattern = "^[A-Za-z0-9][A-Za-z0-9.-]*\\.[A-Za-z0-9][A-Za-z0-9.-]*$"
+        return text.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    nonisolated static func isPathSafeForOrphanRemoval(
+        _ url: URL,
+        homeURL: URL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).standardizedFileURL
+    ) -> Bool {
+        let standardized = url.standardizedFileURL.resolvingSymlinksInPath().path
+        let expandedHome = homeURL.standardizedFileURL.path
+        guard standardized.hasPrefix(expandedHome + "/") else { return false }
+
+        let containersPrefix = "\(expandedHome)/Library/Containers/"
+        let cachesPrefix = "\(expandedHome)/Library/Caches/"
+        let appSupportPrefix = "\(expandedHome)/Library/Application Support/"
+
+        if standardized.hasPrefix(containersPrefix) || standardized.hasPrefix(cachesPrefix) {
+            let remainder: String
+            if standardized.hasPrefix(containersPrefix) {
+                remainder = String(standardized.dropFirst(containersPrefix.count))
+            } else {
+                remainder = String(standardized.dropFirst(cachesPrefix.count))
+            }
+            guard !remainder.contains("/") else { return false }
+            return looksLikeBundleIdentifier(remainder)
+        }
+
+        if standardized.hasPrefix(appSupportPrefix) {
+            let remainder = String(standardized.dropFirst(appSupportPrefix.count))
+            guard !remainder.isEmpty, !remainder.hasSuffix("/") else { return false }
+            let parts = remainder.split(separator: "/").map(String.init)
+            switch parts.count {
+            case 1:
+                return !isProtectedApplicationSupportName(parts[0])
+            case 2:
+                return !isProtectedApplicationSupportName(parts[0])
+                    && !isProtectedApplicationSupportName(parts[1])
+            default:
+                return false
+            }
+        }
+
+        return false
     }
 
     nonisolated private static func displayPath(_ url: URL) -> String {

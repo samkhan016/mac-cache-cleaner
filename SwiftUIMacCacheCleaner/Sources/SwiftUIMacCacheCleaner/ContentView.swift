@@ -525,7 +525,9 @@ struct ContentView: View {
 
         • Ultra Safe, Strict, Balanced, and Developer Deep Clean: increasing scope—from user caches only up to optional developer tool caches.
 
-        • Each target explains why it is included. Cleanup removes files inside selected folders only, not the folders themselves.
+        • Leftover Apps: remove Application Support, sandbox, and cache folders left behind after uninstalling an app.
+
+        • Each target explains why it is included. Standard modes remove files inside selected folders only; Leftover Apps removes entire folders.
         """
     }
 
@@ -805,15 +807,29 @@ struct ContentView: View {
     }
 
     private var modeSafetyDisclaimer: String {
-        """
+        if viewModel.discoveryMode == .uninstalledApps {
+            return """
+            Leftover Apps scans ~/Library/Application Support, ~/Library/Containers, and ~/Library/Caches. It lists third-party leftovers only—Apple system components (com.apple.*) are excluded. App extensions are linked to their installed parent app.
+
+            Deleting removes the entire folder—not just cache files inside it. Nothing is selected by default; review each path before clearing.
+            """
+        }
+        return """
         Cleanup removes files inside the folders you select. This app targets allowlisted cache, log, temp, and (in developer modes) toolchain locations—not your Documents, Desktop, or arbitrary project folders.
 
-        No cleaner can promise that every file under a cache or tool folder is expendable for you. Developer modes may remove large downloads or build outputs you would need to fetch or rebuild. Use Actions → Dry Run (⌘P) first, read each path’s note, and deselect anything unfamiliar.
+        No cleaner can promise that every file under a cache or tool folder is expendable for you. Developer modes may remove large downloads or build outputs you would need to fetch or rebuild. Use Actions → Dry Run (⌘P) first, read each path's note, and deselect anything unfamiliar.
         """
     }
 
     private var cleanupConfirmationMessage: String {
-        """
+        if viewModel.discoveryMode == .uninstalledApps {
+            return """
+            This will permanently delete the selected leftover app folders and everything inside them.
+
+            Only folders with no matching installed app on this Mac are listed (Application Support names, bundle IDs in Containers/Caches). Use Actions → Dry Run (⌘P) if you want a preview first. This cannot be undone.
+            """
+        }
+        return """
         This will delete files inside the selected folders only (not the folders themselves).
 
         Locations are restricted by the current mode, but no app can guarantee that a cache or toolchain folder never contains something you still need. Balanced and Developer modes can clear more aggressive targets.
