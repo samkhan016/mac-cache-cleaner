@@ -12,26 +12,28 @@ macOS cache-cleaning utility built as a native SwiftUI desktop app.
 
 The app dynamically discovers safe cache-like folders under approved user-space roots and only shows paths that currently exist.
 It supports:
+
 - `Ultra Safe` mode: `~/Library/Caches` only.
 - `Strict` mode: `Ultra Safe` plus dynamically discovered app container and group container cache folders, and conservative Xcode/Simulator cache roots.
 - `Balanced` mode: `Strict` plus dynamically discovered log/temp folders in approved user-space roots.
 - `Developer Deep Clean` mode: `Balanced` plus opt-in developer caches across multiple ecosystems (for example Gradle, npm/yarn/pnpm, pip/poetry, Android Studio, JetBrains, and extra Xcode build caches).
 
 This means the app is useful for both:
+
 - general Mac users who want safe cleanup (`Ultra Safe`, `Strict`, or `Balanced`)
 - developers who also want deeper toolchain cleanup (`Developer Deep Clean`)
 
 ## Build and run the SwiftUI app
 
 ```bash
-cd "/Users/abdulsamadkhan/Work/mac-cache-cleaner/SwiftUIMacCacheCleaner"
+cd SwiftUIMacCacheCleaner
 swift run
 ```
 
 To build an app bundle:
 
 ```bash
-cd "/Users/abdulsamadkhan/Work/mac-cache-cleaner/SwiftUIMacCacheCleaner"
+cd SwiftUIMacCacheCleaner
 ./build_app.sh
 open "dist/Mac Cache Cleaner SwiftUI.app"
 ```
